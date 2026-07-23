@@ -924,6 +924,22 @@ rb_ec_partial_backtrace_object(const rb_execution_context_t *ec, long start_fram
          */
 
         size = end_cfp - cfp + 1;
+
+        // A ZJIT frame can represent several logical frames when the JIT
+        // inlined calls without pushing control frames. Count the extra
+        // logical frames so the allocation below has room for them.
+        if (rb_zjit_enabled_p && size > 0) {
+            for (const rb_control_frame_t *chain_cfp = cfp; chain_cfp != end_cfp;
+                 chain_cfp = RUBY_VM_PREVIOUS_CONTROL_FRAME(chain_cfp)) {
+                if (CFP_ZJIT_FRAME_P(chain_cfp)) {
+                    const zjit_jit_frame_t *jit_frame = CFP_ZJIT_FRAME(chain_cfp);
+                    if (jit_frame->inline_count > 0) {
+                        size += jit_frame->inline_count - 1;
+                    }
+                }
+            }
+        }
+
         if (size < 0) {
             num_frames = 0;
         }
@@ -943,22 +959,41 @@ rb_ec_partial_backtrace_object(const rb_execution_context_t *ec, long start_fram
     for (; cfp != end_cfp && (bt->backtrace_size < num_frames); cfp = RUBY_VM_PREVIOUS_CONTROL_FRAME(cfp)) {
         if (CFP_ISEQ(cfp)) {
             if (CFP_PC(cfp)) {
-                if (start_frame > 0) {
-                    start_frame--;
-                }
-                else {
-                    bool internal = is_internal_location(CFP_ISEQ(cfp));
+                // Expand the logical frames this control frame represents:
+                // virtual (inlined) frames first, then the physical frame.
+                // Frames without an inline chain yield exactly one entry.
+                zjit_frame_iter_t iter = zjit_frame_iter_init(cfp);
+                const rb_iseq_t *iter_iseq;
+                const VALUE *iter_pc;
+                const rb_callable_method_entry_t *iter_cme;
+
+                while (bt->backtrace_size < num_frames &&
+                       zjit_frame_iter_next(&iter, &iter_iseq, &iter_pc, &iter_cme)) {
+                    // iter.done means this is the physical frame: only it can
+                    // be a dummy or rescue/ensure frame, and only it resolves
+                    // its cme through the EP. Virtual frames supply the cme
+                    // from their chain descriptor and are never dummy,
+                    // rescue, or ensure frames because such ISEQs are never
+                    // inlined.
+                    bool physical = iter.done;
+
+                    if (start_frame > 0) {
+                        start_frame--;
+                        continue;
+                    }
+
+                    bool internal = is_internal_location(iter_iseq);
                     if (skip_internal && internal) continue;
                     if (!skip_next_frame) {
-                        const rb_iseq_t *iseq = CFP_ISEQ(cfp);
-                        const VALUE *pc = CFP_PC(cfp);
+                        const rb_iseq_t *iseq = iter_iseq;
+                        const VALUE *pc = iter_pc;
                         if (internal && backpatch_counter > 0) {
                             // To keep only one internal frame, discard the previous backpatch frames
                             bt->backtrace_size -= backpatch_counter;
                             backpatch_counter = 0;
                         }
                         loc = &bt->backtrace[bt->backtrace_size++];
-                        RB_OBJ_WRITE(btobj, &loc->cme, rb_vm_frame_method_entry(cfp));
+                        RB_OBJ_WRITE(btobj, &loc->cme, iter_cme ? iter_cme : rb_vm_frame_method_entry(cfp));
                         // internal frames (`<internal:...>`) should behave like C methods
                         if (internal) {
                             // Typically, these iseq and pc are not needed because they will be backpatched later.
@@ -970,7 +1005,7 @@ rb_ec_partial_backtrace_object(const rb_execution_context_t *ec, long start_fram
                         }
                         else {
                             RB_OBJ_WRITE(btobj, &loc->iseq, iseq);
-                            if ((VM_FRAME_TYPE(cfp) & VM_FRAME_MAGIC_MASK) == VM_FRAME_MAGIC_DUMMY) {
+                            if (physical && (VM_FRAME_TYPE(cfp) & VM_FRAME_MAGIC_MASK) == VM_FRAME_MAGIC_DUMMY) {
                                 loc->pc = NULL; // means location.first_lineno
                             }
                             else {
@@ -983,7 +1018,7 @@ rb_ec_partial_backtrace_object(const rb_execution_context_t *ec, long start_fram
                             backpatch_counter = 0;
                         }
                     }
-                    skip_next_frame = is_rescue_or_ensure_frame(cfp);
+                    skip_next_frame = physical && is_rescue_or_ensure_frame(cfp);
                 }
             }
         }
@@ -2063,44 +2098,58 @@ thread_profile_frames(rb_execution_context_t *ec, int start, int limit, VALUE *b
 
     for (i=0; i<limit && cfp != end_cfp; cfp = RUBY_VM_PREVIOUS_CONTROL_FRAME(cfp)) {
         if (VM_FRAME_RUBYFRAME_P_UNCHECKED(cfp) && CFP_PC(cfp)) {
-            if (start > 0) {
-                start--;
-                continue;
-            }
+            // A ZJIT frame may represent several logical frames when the JIT
+            // inlined method calls without pushing control frames for the
+            // callees. Expand each logical frame into its own profile entry
+            // by walking the JITFrame's inline chain. Frames without a chain
+            // yield exactly one entry, equivalent to reading CFP_ISEQ/CFP_PC.
+            zjit_frame_iter_t iter = zjit_frame_iter_init(cfp);
+            const rb_iseq_t *iseq;
+            const VALUE *pc;
+            const rb_callable_method_entry_t *vframe_cme;
+            bool innermost = true;
 
-            /* record frame info */
-            cme = rb_vm_frame_method_entry_unchecked(cfp);
-            const rb_iseq_t *iseq = CFP_ISEQ(cfp);
-            if (cme && cme->def->type == VM_METHOD_TYPE_ISEQ) {
-                buff[i] = (VALUE)cme;
-            }
-            else {
-                buff[i] = (VALUE)iseq;
-            }
+            while (i < limit && zjit_frame_iter_next(&iter, &iseq, &pc, &vframe_cme)) {
+                if (start > 0) {
+                    start--;
+                    innermost = false;
+                    continue;
+                }
 
-            if (lines) {
-                const VALUE *pc = CFP_PC(cfp);
-                VALUE *iseq_encoded = ISEQ_BODY(iseq)->iseq_encoded;
-                VALUE *pc_end = iseq_encoded + ISEQ_BODY(iseq)->iseq_size;
-
-                // The topmost frame may have an invalid PC because the JIT
-                // may leave it uninitialized for speed. JIT code must update the PC
-                // before entering a non-leaf method (so that `caller` will work),
-                // so only the topmost frame could possibly have an out-of-date PC.
-                // ZJIT doesn't set `cfp->jit_return`, so it's not a reliable signal.
-                // TODO(zjit): lightweight frames potentially makes more than
-                //             the top most frame invalid.
-                //
-                // Avoid passing invalid PC to calc_lineno() to avoid crashing.
-                if (cfp == top && (pc < iseq_encoded || pc > pc_end)) {
-                    lines[i] = 0;
+                /* record frame info */
+                // Virtual (inlined) frames carry their cme in the chain
+                // descriptor because they have no EP; the physical frame
+                // uses the EP-based lookup as before.
+                cme = vframe_cme ? vframe_cme : rb_vm_frame_method_entry_unchecked(cfp);
+                if (cme && cme->def->type == VM_METHOD_TYPE_ISEQ) {
+                    buff[i] = (VALUE)cme;
                 }
                 else {
-                    lines[i] = calc_lineno(iseq, pc);
+                    buff[i] = (VALUE)iseq;
                 }
-            }
 
-            i++;
+                if (lines) {
+                    VALUE *iseq_encoded = ISEQ_BODY(iseq)->iseq_encoded;
+                    VALUE *pc_end = iseq_encoded + ISEQ_BODY(iseq)->iseq_size;
+
+                    // The topmost frame may have an invalid PC because the JIT
+                    // may leave it uninitialized for speed. JIT code must update the PC
+                    // before entering a non-leaf method (so that `caller` will work),
+                    // so only the topmost frame could possibly have an out-of-date PC.
+                    // ZJIT doesn't set `cfp->jit_return`, so it's not a reliable signal.
+                    //
+                    // Avoid passing invalid PC to calc_lineno() to avoid crashing.
+                    if (cfp == top && innermost && (pc < iseq_encoded || pc > pc_end)) {
+                        lines[i] = 0;
+                    }
+                    else {
+                        lines[i] = calc_lineno(iseq, pc);
+                    }
+                }
+
+                i++;
+                innermost = false;
+            }
         }
         else {
             cme = rb_vm_frame_method_entry_unchecked(cfp);

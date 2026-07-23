@@ -233,4 +233,80 @@ CFP_ISEQ(const rb_control_frame_t *cfp)
     return cfp->_iseq;
 }
 
+// Read-only iterator over the logical frames represented by one physical
+// CFP: each virtual (inlined) frame innermost first, then the physical frame
+// itself. Safe to use from restricted contexts such as signal handlers
+// (rb_profile_frames) and crash dumps because it never writes and touches
+// only the JITFrame and its compile-time descriptors. Frames that hold no
+// JITFrame yield exactly one entry, so walkers can use this unconditionally.
+typedef struct {
+    const rb_control_frame_t *cfp;
+    const zjit_jit_frame_t *jit_frame; // NULL for non-ZJIT frames
+    uint32_t next;                     // next chain entry to yield
+    bool done;
+} zjit_frame_iter_t;
+
+static inline zjit_frame_iter_t
+zjit_frame_iter_init(const rb_control_frame_t *cfp)
+{
+    zjit_frame_iter_t iter = {
+        .cfp = cfp,
+        .jit_frame = CFP_ZJIT_FRAME_P(cfp) ? CFP_ZJIT_FRAME(cfp) : NULL,
+        .next = 0,
+        .done = false,
+    };
+    return iter;
+}
+
+// Yield the next logical frame's iseq, pc, and cme. Returns false when
+// exhausted. Virtual frames supply the cme from their descriptor because
+// they have no EP to look it up through; for the physical frame cme_out is
+// set to NULL and the caller should use its usual EP-based lookup
+// (rb_vm_frame_method_entry). For a frame without a JITFrame the reported
+// iseq/pc fall back to cfp->_iseq and cfp->pc, matching CFP_ISEQ/CFP_PC.
+static inline bool
+zjit_frame_iter_next(zjit_frame_iter_t *iter, const rb_iseq_t **iseq_out, const VALUE **pc_out, const rb_callable_method_entry_t **cme_out)
+{
+    if (iter->done) {
+        return false;
+    }
+
+#if USE_ZJIT
+    const zjit_jit_frame_t *jit_frame = iter->jit_frame;
+    if (jit_frame && iter->next < jit_frame->inline_count) {
+        const zjit_inline_frame_t *vframe = &jit_frame->inline_frames[iter->next++];
+        // The final chain entry describes the physical frame; report its cme
+        // as NULL like the no-chain case so the caller's EP-based lookup,
+        // which works for physical frames, stays authoritative.
+        bool physical = iter->next == jit_frame->inline_count;
+        *iseq_out = vframe->iseq;
+        *pc_out = vframe->pc;
+        *cme_out = physical ? NULL : vframe->cme;
+        if (physical) {
+            iter->done = true;
+        }
+        return true;
+    }
+
+    // A frame with no inlining: yield the physical frame itself.
+    iter->done = true;
+    if (jit_frame) {
+        *iseq_out = jit_frame->iseq;
+        *pc_out = jit_frame->pc;
+    }
+    else {
+        *iseq_out = iter->cfp->_iseq;
+        *pc_out = iter->cfp->pc;
+    }
+    *cme_out = NULL;
+    return true;
+#else
+    iter->done = true;
+    *iseq_out = iter->cfp->_iseq;
+    *pc_out = iter->cfp->pc;
+    *cme_out = NULL;
+    return true;
+#endif
+}
+
 #endif // #ifndef ZJIT_H

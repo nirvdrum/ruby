@@ -51,6 +51,62 @@ int ruby_on_ci;
 #define kprintf(...) if (fprintf(errout, __VA_ARGS__) < 0) goto error
 #define kputs(s) if (fputs(s, errout) < 0) goto error
 
+// Print one compact line for each virtual (inlined) frame a ZJIT frame
+// represents, above the physical frame's own line. Virtual frames have no
+// rb_control_frame_t, so most of control_frame_dump's columns do not apply;
+// report only what the chain descriptor carries. Frames without an inline
+// chain print nothing here. Keep dereferences minimal and range-checked:
+// this runs in crash reports where heap objects may be corrupted.
+static bool
+virtual_frames_dump(const rb_control_frame_t *cfp, FILE *errout)
+{
+    zjit_frame_iter_t iter = zjit_frame_iter_init(cfp);
+    if (!iter.jit_frame || iter.jit_frame->inline_count == 0) {
+        return true;
+    }
+
+    const rb_iseq_t *iseq;
+    const VALUE *pc;
+    const rb_callable_method_entry_t *cme;
+
+    while (zjit_frame_iter_next(&iter, &iseq, &pc, &cme)) {
+        // The final entry is the physical frame; control_frame_dump prints it.
+        if (iter.done) {
+            break;
+        }
+
+        ptrdiff_t pc_idx = -1;
+        if (iseq && pc) {
+            ptrdiff_t idx = pc - ISEQ_BODY(iseq)->iseq_encoded;
+            if (idx >= 0 && (size_t)idx <= ISEQ_BODY(iseq)->iseq_size) {
+                pc_idx = idx;
+            }
+        }
+
+        kprintf("c:---- ");
+        if (pc_idx == -1) {
+            kprintf("p:---- ");
+        }
+        else {
+            kprintf("p:%04"PRIdPTRDIFF" ", pc_idx);
+        }
+        kprintf("INLINED");
+        if (iseq && !SYMBOL_P((VALUE)iseq) && !IMEMO_TYPE_P(iseq, imemo_ifunc)) {
+            VALUE label = ISEQ_BODY(iseq)->location.label;
+            int line = pc_idx >= 0 ? rb_iseq_line_no(iseq, pc_idx) : 0;
+            VALUE path = rb_iseq_path(iseq);
+            kprintf(" %.*s:%d in %.*s",
+                    RSTRING_LENINT(path), RSTRING_PTR(path), line,
+                    RSTRING_LENINT(label), RSTRING_PTR(label));
+        }
+        kprintf("\n");
+    }
+    return true;
+
+  error:
+    return false;
+}
+
 static bool
 control_frame_dump(const rb_execution_context_t *ec, const rb_control_frame_t *cfp, FILE *errout)
 {
@@ -500,6 +556,7 @@ rb_vmdebug_stack_dump_raw(const rb_execution_context_t *ec, const rb_control_fra
     kprintf("-- Control frame information "
             "-----------------------------------------------\n");
     while ((void *)cfp < (void *)(ec->vm_stack + ec->vm_stack_size)) {
+        virtual_frames_dump(cfp, errout);
         control_frame_dump(ec, cfp, errout);
         cfp++;
     }
@@ -607,6 +664,7 @@ vm_stack_dump_each(const rb_execution_context_t *ec, const rb_control_frame_t *c
     {
         const VALUE *ptr = ep - local_table_size;
 
+        virtual_frames_dump(cfp, errout);
         control_frame_dump(ec, cfp, errout);
 
         for (i = 0; i < argc; i++) {
