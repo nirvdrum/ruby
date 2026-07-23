@@ -3,13 +3,18 @@ use std::mem::{align_of, size_of};
 use std::ptr;
 
 use crate::cruby::{__IncompleteArrayField, IseqPtr, VALUE, rb_gc_mark_movable, rb_gc_location};
-use crate::cruby::zjit_jit_frame;
+use crate::cruby::{zjit_jit_frame, zjit_inline_frame};
 use crate::codegen::iseq_may_write_block_code;
 use crate::state::ZJITState;
 
 /// JITFrame struct is defined in zjit.h (the single source of truth) and
 /// imported into Rust via bindgen. See zjit.h for field documentation.
 pub type JITFrame = zjit_jit_frame;
+
+/// One entry of a JITFrame's inline chain. Defined in zjit.h (the single
+/// source of truth) and imported via bindgen; see zjit.h for field
+/// documentation.
+pub type InlineFrame = zjit_inline_frame;
 
 impl JITFrame {
     /// Allocate a JITFrame and its trailing stack map on the heap, register it
@@ -38,6 +43,8 @@ impl JITFrame {
                 iseq,
                 materialize_block_code,
                 stack_size: stack_size.try_into().unwrap(),
+                inline_count: 0,
+                inline_frames: ptr::null(),
                 stack: __IncompleteArrayField::new(),
             });
         }
@@ -51,20 +58,105 @@ impl JITFrame {
         Self::alloc(pc, iseq, materialize_block_code, stack_size)
     }
 
-    /// Mark the iseq pointer for GC. Called from rb_zjit_root_mark.
+    /// Create a JITFrame that carries an inline chain describing every
+    /// logical frame live at this site, innermost first, with the final
+    /// entry describing the physical frame. The chain is leaked because the
+    /// JITFrame referencing it lives for the rest of the process; both are
+    /// kept alive for GC through ZJITState::get_jit_frames().
+    ///
+    /// The chain must be non-empty and its first entry's pc/iseq must match
+    /// the pc/iseq passed here, which continue to describe the innermost
+    /// frame for CFP_PC/CFP_ISEQ compatibility.
+    pub fn new_iseq_with_chain(
+        pc: *const VALUE,
+        iseq: IseqPtr,
+        stack_size: usize,
+        chain: Vec<InlineFrame>,
+    ) -> *const Self {
+        assert!(!chain.is_empty(), "inline chains must describe at least the physical frame");
+        assert_eq!(pc, chain[0].pc);
+        assert_eq!(iseq, chain[0].iseq);
+
+        let inline_count: u32 = chain.len().try_into().unwrap();
+        let inline_frames = Box::leak(chain.into_boxed_slice()).as_ptr();
+
+        let materialize_block_code = !iseq_may_write_block_code(iseq);
+        let frame = Self::alloc(pc, iseq, materialize_block_code, stack_size);
+        unsafe {
+            let frame = frame.cast_mut();
+            (*frame).inline_count = inline_count;
+            (*frame).inline_frames = inline_frames;
+        }
+        frame
+    }
+
+    /// The inline chain attached to this JITFrame, if any.
+    fn inline_frames_mut(&mut self) -> &mut [InlineFrame] {
+        if self.inline_frames.is_null() {
+            return &mut [];
+        }
+        // The chain is uniquely owned by this JITFrame (allocated in
+        // new_iseq_with_chain and never shared), so handing out a mutable
+        // slice from &mut self is sound despite the *const field type, which
+        // only reflects that JIT code and C walkers never write through it.
+        unsafe { std::slice::from_raw_parts_mut(self.inline_frames.cast_mut(), self.inline_count as usize) }
+    }
+
+    /// Mark the iseq pointer and any inline chain members for GC. Called
+    /// from rb_zjit_root_mark.
     pub fn mark(&self) {
         if !self.iseq.is_null() {
             unsafe { rb_gc_mark_movable(VALUE::from(self.iseq)); }
         }
+
+        for i in 0..self.inline_count as usize {
+            let vframe = unsafe { &*self.inline_frames.add(i) };
+            if !vframe.iseq.is_null() {
+                unsafe { rb_gc_mark_movable(VALUE::from(vframe.iseq)); }
+            }
+            if !vframe.cme.is_null() {
+                unsafe { rb_gc_mark_movable(VALUE::from(vframe.cme)); }
+            }
+            // recv and specval are not marked here: receiver locations are
+            // either immediates or native stack slots covered by conservative
+            // machine stack marking, and static specvals are either the
+            // block-handler-none immediate or a tagged EP kept alive by the
+            // bmethod's Proc through the cme marked above.
+        }
     }
 
-    /// Update the iseq pointer after GC compaction.
+    /// Update the iseq pointer and any inline chain members after GC
+    /// compaction.
+    ///
+    /// Signal-context frame walkers (rb_profile_frames) may read these
+    /// fields concurrently with compaction, so every update must be a single
+    /// aligned pointer store, never a read-modify-write. A racing reader
+    /// then observes either the old or the new location, both of which
+    /// describe the same object. This mirrors the long-standing contract for
+    /// the jit_frame->iseq update above.
     pub fn update_references(&mut self) {
         if !self.iseq.is_null() {
             let new_iseq = unsafe { rb_gc_location(VALUE::from(self.iseq)) }.as_iseq();
             if self.iseq != new_iseq {
                 self.iseq = new_iseq;
             }
+        }
+
+        let self_iseq = self.iseq;
+        for vframe in self.inline_frames_mut() {
+            if !vframe.iseq.is_null() {
+                vframe.iseq = unsafe { rb_gc_location(VALUE::from(vframe.iseq)) }.as_iseq();
+            }
+            if !vframe.cme.is_null() {
+                vframe.cme = unsafe { rb_gc_location(VALUE::from(vframe.cme)) }.as_cme();
+            }
+        }
+
+        // The innermost chain entry duplicates the JITFrame's iseq, and both
+        // are updated from the same old pointer, so they must remain in sync
+        // through compaction.
+        if let Some(innermost) = self.inline_frames_mut().first() {
+            debug_assert_eq!(self_iseq, innermost.iseq);
         }
     }
 }

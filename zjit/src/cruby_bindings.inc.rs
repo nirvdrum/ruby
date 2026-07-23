@@ -1980,11 +1980,24 @@ pub const DEFINED_FUNC: defined_type = 16;
 pub const DEFINED_CONST_FROM: defined_type = 17;
 pub type defined_type = u32;
 #[repr(C)]
+pub struct zjit_inline_frame {
+    pub pc: *const VALUE,
+    pub iseq: *const rb_iseq_t,
+    pub cme: *const rb_callable_method_entry_t,
+    pub frame_type: VALUE,
+    pub specval: VALUE,
+    pub recv: VALUE,
+    pub sp_base: u32,
+}
+pub type zjit_inline_frame_t = zjit_inline_frame;
+#[repr(C)]
 pub struct zjit_jit_frame {
     pub pc: *const VALUE,
     pub iseq: *const rb_iseq_t,
     pub materialize_block_code: bool,
     pub stack_size: u32,
+    pub inline_count: u32,
+    pub inline_frames: *const zjit_inline_frame_t,
     pub stack: __IncompleteArrayField<VALUE>,
 }
 pub const ISEQ_BODY_OFFSET_PARAM: zjit_struct_offsets = 16;

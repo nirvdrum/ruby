@@ -44,6 +44,53 @@ ZJIT_STACK_MAP_SKIP_SIZE(VALUE entry)
     return entry >> ZJIT_STACK_MAP_SHIFT;
 }
 
+// Describes one logical frame in an inline chain. All but the final entry of
+// a chain are inlined callees that have no physical rb_control_frame_t while
+// JIT code runs; the final entry describes the physical frame itself and
+// uses only its iseq/pc members. The whole chain is known statically at each
+// JITFrame site, so these are baked at compile time and live for the process
+// lifetime, like JITFrames themselves. Design notes for the virtual inline
+// frames work will be folded into doc/jit/zjit.md once it is complete.
+//
+// Terminology: this is the analogue of HotSpot's compiledVFrame/ScopeDesc, a
+// descriptor from which a frame can be synthesized. It is not the analogue
+// of Truffle's VirtualFrame, which is a live frame object that the compiler
+// scalar-replaces.
+typedef struct zjit_inline_frame {
+    // PC within iseq. For the innermost frame this duplicates the owning
+    // JITFrame's pc; for outer frames it is the call site's return PC, which
+    // is fully static per JITFrame site. Field order matches zjit_jit_frame
+    // for the members the two structs share.
+    const VALUE *pc;
+    // The inlined callee's ISEQ.
+    const rb_iseq_t *iseq;
+    // Method entry to materialize into ep[-2].
+    const rb_callable_method_entry_t *cme;
+    // VM_FRAME_MAGIC_* | flags to materialize into ep[0].
+    VALUE frame_type;
+    // Static part of ep[-1]: VM_BLOCK_HANDLER_NONE or a tagged captured EP
+    // for bmethods. Literal blockiseq handlers cannot be encoded statically
+    // because they capture the caller frame; materialization reconstructs
+    // them from the caller's freshly synthesized frame instead.
+    VALUE specval;
+    // Receiver location in the ZJIT_STACK_MAP_* encoding: an immediate VALUE
+    // or a tagged native-stack index from cfp->jit_return.
+    //
+    // Frame layout details that materialization also needs, such as the
+    // callee's local table size, are intentionally not duplicated here:
+    // materialization runs in-thread with full VM access and derives them
+    // from iseq, keeping the ISEQ the single source of truth. Only the
+    // read-only walkers, which need nothing beyond iseq/pc, run in
+    // restricted contexts.
+    VALUE recv;
+    // This frame's VM stack offset, in slots, from the physical frame's SP
+    // register (which equals the physical frame's ep + 1). Zero for the
+    // final (physical frame) entry. Unlike local table sizes this is not
+    // derivable from the ISEQ: it depends on each call site's operand stack
+    // depth, so materialization needs it to lay out the synthesized frames.
+    uint32_t sp_base;
+} zjit_inline_frame_t;
+
 // JITFrame is defined here as the single source of truth and imported into
 // Rust via bindgen. C code reads fields directly; Rust uses an impl block.
 typedef struct zjit_jit_frame {
@@ -61,6 +108,21 @@ typedef struct zjit_jit_frame {
 
     // Number of stack map entries in stack[].
     uint32_t stack_size;
+
+    // Number of entries in inline_frames. Zero when no inlining is active
+    // at this site, in which case inline_frames may be NULL and the
+    // JITFrame's pc/iseq describe the only logical frame. When non-zero, the
+    // chain describes every logical frame this physical CFP represents,
+    // innermost (deepest inlined callee) first; the final entry describes
+    // the physical frame itself, whose pc is the static call site into the
+    // first inlined callee. The innermost entry's pc/iseq duplicate the
+    // JITFrame's pc/iseq fields.
+    uint32_t inline_count;
+    // Compile-time descriptor chain, or NULL. Owned by ZJIT and registered
+    // as a GC root so iseq/cme members stay alive and are updated on
+    // compaction.
+    const zjit_inline_frame_t *inline_frames;
+
     // Flexible array of stack map entries. Each entry is either an immediate
     // VALUE, a tagged native-stack index from cfp->jit_return for a value
     // kept by the JIT, or a tagged count of VM stack slots to skip.
