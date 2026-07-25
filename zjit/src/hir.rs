@@ -1422,6 +1422,12 @@ macro_rules! for_each_operand_impl {
             Insn::Snapshot { state } => {
                 $visit_many!(state.stack);
                 $visit_many!(state.locals);
+                // The inline call site's receiver participates like any other
+                // Snapshot operand: passes must remap it through union-find,
+                // and referencing it here keeps the receiver's computation
+                // alive so the stack map can deliver it into the virtual
+                // frame's receiver slot.
+                $visit_many!(state.inline_recv);
             }
             Insn::FixnumAdd { left, right, state }
             | Insn::FixnumSub { left, right, state }
@@ -5410,6 +5416,7 @@ impl Function {
                     blockiseq,
                     chain_sp_base,
                     inline_chain: Rc::new(chain_plan),
+                    inline_recv: recv,
                 };
                 let add_result = match add_iseq_to_hir(self, iseq, mode) {
                     Ok(r) => r,
@@ -7615,6 +7622,12 @@ pub struct FrameState {
     /// non-inlined frames. Shared via Rc because every Snapshot cloned from
     /// this frame carries the same immutable plan.
     inline_chain: Option<Rc<Vec<InlineFramePlan>>>,
+
+    /// The receiver passed at this frame's inline call site, i.e. the
+    /// callee's `self`. None for non-inlined frames. Under virtual inline
+    /// frames the stack map delivers this value into the frame's receiver
+    /// slot so materialization can populate cfp->self.
+    inline_recv: Option<InsnId>,
 }
 
 impl FrameState {
@@ -7676,7 +7689,7 @@ pub struct FrameStatePrinter<'a> {
 
 impl FrameState {
     fn new(iseq: IseqPtr) -> FrameState {
-        FrameState { iseq, pc: std::ptr::null::<VALUE>(), insn_idx: 0, stack: vec![], locals: vec![], caller: None, depth: 0, chain_sp_base: 0, inline_chain: None }
+        FrameState { iseq, pc: std::ptr::null::<VALUE>(), insn_idx: 0, stack: vec![], locals: vec![], caller: None, depth: 0, chain_sp_base: 0, inline_chain: None, inline_recv: None }
     }
 
     /// Construct a `FrameState` for an inlined callee. `caller` is the `InsnId`
@@ -7684,8 +7697,8 @@ impl FrameState {
     /// depth; `chain_sp_base` is the callee frame's VM stack offset from the
     /// physical frame's SP (see the field documentation); `inline_chain` is
     /// the static descriptor plan for this frame's chain.
-    fn inlined(iseq: IseqPtr, caller: InsnId, depth: InlineDepth, chain_sp_base: u32, inline_chain: Rc<Vec<InlineFramePlan>>) -> FrameState {
-        FrameState { caller: Some(caller), depth, chain_sp_base, inline_chain: Some(inline_chain), ..FrameState::new(iseq) }
+    fn inlined(iseq: IseqPtr, caller: InsnId, depth: InlineDepth, chain_sp_base: u32, inline_chain: Rc<Vec<InlineFramePlan>>, inline_recv: InsnId) -> FrameState {
+        FrameState { caller: Some(caller), depth, chain_sp_base, inline_chain: Some(inline_chain), inline_recv: Some(inline_recv), ..FrameState::new(iseq) }
     }
 
     /// This frame's VM stack offset, in slots, from the physical frame's SP.
@@ -7698,6 +7711,12 @@ impl FrameState {
     /// for non-inlined frames.
     pub fn inline_chain(&self) -> Option<&Rc<Vec<InlineFramePlan>>> {
         self.inline_chain.as_ref()
+    }
+
+    /// The receiver passed at this frame's inline call site, or None for
+    /// non-inlined frames.
+    pub fn inline_recv(&self) -> Option<InsnId> {
+        self.inline_recv
     }
 
     /// Get the number of stack operands
@@ -8056,6 +8075,9 @@ enum AddIseqMode {
         /// The static descriptor plan for the callee frame's inline chain.
         /// See [`FrameState::inline_chain`].
         inline_chain: Rc<Vec<InlineFramePlan>>,
+        /// The receiver passed at the inline call site (the callee's self).
+        /// See [`FrameState::inline_recv`].
+        inline_recv: InsnId,
     },
 }
 
@@ -8127,8 +8149,8 @@ fn add_iseq_to_hir(
     // separate rewrite pass.
     fn new_frame_state(mode: &AddIseqMode, iseq: IseqPtr) -> FrameState {
         match mode {
-            AddIseqMode::Inlined { caller, depth, chain_sp_base, inline_chain, .. } =>
-                FrameState::inlined(iseq, *caller, *depth, *chain_sp_base, Rc::clone(inline_chain)),
+            AddIseqMode::Inlined { caller, depth, chain_sp_base, inline_chain, inline_recv, .. } =>
+                FrameState::inlined(iseq, *caller, *depth, *chain_sp_base, Rc::clone(inline_chain), *inline_recv),
             AddIseqMode::Standalone => FrameState::new(iseq),
         }
     }

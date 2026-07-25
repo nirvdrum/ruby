@@ -1582,7 +1582,21 @@ fn gen_push_inline_frame(
 ) {
     let local_size = unsafe { get_iseq_body_local_table_size(iseq) }.to_usize();
     let stack_growth = state.stack_size() + local_size + unsafe { get_iseq_body_stack_max(iseq) }.to_usize();
-    gen_stack_overflow_check(jit, asm, function, state, stack_growth);
+    gen_stack_overflow_check(jit, asm, function, state, virtual_sp_base(state) + stack_growth);
+
+    // Under virtual inline frames no physical frame is pushed at all: the
+    // SP and CFP registers stay pinned to the physical frame, ec->cfp is
+    // untouched, and chain descriptors on JITFrames represent the callee.
+    // Only two pieces of the push survive: the stack overflow check above
+    // (the callee's VM stack region is still reserved and used) and the
+    // caller locals spill below (materialization reads caller locals from
+    // VM stack memory; the caller's own eager-spill points no longer run
+    // while the callee is executing).
+    if VIRTUAL_INLINE_FRAMES {
+        debug_assert!(blockiseq.is_none(), "literal-block sends are not inlined under virtual inline frames");
+        gen_spill_locals(jit, asm, state);
+        return;
+    }
 
     // Save cfp->pc and cfp->sp for the caller frame.
     // Cannot use gen_prepare_non_leaf_call because we need special SP math.
@@ -1688,6 +1702,12 @@ fn gen_pop_inline_frame(
     argc: usize,
     state: &FrameState,
 ) {
+    // Under virtual inline frames nothing was pushed, so there is nothing
+    // to restore: the SP and CFP registers never moved.
+    if VIRTUAL_INLINE_FRAMES {
+        return;
+    }
+
     let local_size = unsafe { get_iseq_body_local_table_size(iseq) }.to_usize();
     let sp_offset = (state.stack().len() + local_size - argc + VM_ENV_DATA_SIZE.to_usize()) * SIZEOF_VALUE;
 
@@ -1730,7 +1750,7 @@ fn gen_send_iseq_direct(
     gen_save_sp(asm, virtual_sp_base(state) + stack_size);
 
     gen_spill_locals(jit, asm, state);
-    asm.stack_map(stack_map, jit_frame, state.depth);
+    asm.stack_map(stack_map, jit_frame, jit_frame_depth(state));
 
     // This mirrors vm_caller_setup_arg_block() in for the `blockiseq != NULL` case.
     // The HIR specialization guards ensure we will only reach here for literal blocks,
@@ -1963,7 +1983,7 @@ fn gen_invoke_block_iseq_direct(
     gen_save_sp(asm, virtual_sp_base(state) + stack_size);
 
     gen_spill_locals(jit, asm, state);
-    asm.stack_map(stack_map, jit_frame, state.depth);
+    asm.stack_map(stack_map, jit_frame, jit_frame_depth(state));
 
     gen_push_frame(asm, args.len(), state, ControlFrame {
         recv: captured_self,
@@ -3310,7 +3330,7 @@ fn gen_write_jit_frame(asm: &mut Assembler, state: &FrameState, stack_map_size: 
     gen_incr_counter(asm, Counter::vm_write_jit_frame_count);
     asm_comment!(asm, "save JITFrame to CFP");
     let jit_frame = jit_frame_for_state(state, stack_map_size);
-    asm.mov(Opnd::mem(64, NATIVE_BASE_PTR, jit_frame_slot_offset(state.depth)), Opnd::const_ptr(jit_frame));
+    asm.mov(Opnd::mem(64, NATIVE_BASE_PTR, jit_frame_slot_offset(jit_frame_depth(state))), Opnd::const_ptr(jit_frame));
 
     // CFP_PC for a live JIT frame routes through the JITFrame on the native
     // stack (cfp->jit_return points at this frame's slot), so we don't need to
@@ -3377,6 +3397,20 @@ fn virtual_sp_base(state: &FrameState) -> usize {
     }
     else {
         0
+    }
+}
+
+/// The JITFrame slot depth used for a frame's JITFrame publishes and stack
+/// map encodings. Under virtual inline frames only the physical frame's
+/// slot exists: cfp->jit_return is always NATIVE_BASE_PTR, chain
+/// descriptors represent the inlined frames, and stack map indexes are
+/// relative to the one physical slot.
+fn jit_frame_depth(state: &FrameState) -> InlineDepth {
+    if VIRTUAL_INLINE_FRAMES {
+        0
+    }
+    else {
+        state.depth
     }
 }
 
@@ -3456,7 +3490,22 @@ fn build_stack_map(jit: &JITState, function: &Function, state: &FrameState) -> V
         let Some(caller) = current_state.caller() else {
             break;
         };
-        stack.push(StackMapEntry::Skip(inline_frame_stack_gap(current_state.iseq)));
+
+        if VIRTUAL_INLINE_FRAMES {
+            // Materialization must populate the callee's receiver slot (there
+            // is no physical frame push to write it), so deliver the receiver
+            // through the map: skip the env data and local table, which are
+            // handled by chain descriptors and eager local spills, then write
+            // the receiver into the slot below them.
+            let recv = current_state.inline_recv()
+                .expect("an inlined frame always records its receiver");
+            stack.push(StackMapEntry::Skip(inline_frame_stack_gap(current_state.iseq) - 1));
+            stack.push(StackMapEntry::Opnd(jit.get_opnd(recv)));
+        }
+        else {
+            stack.push(StackMapEntry::Skip(inline_frame_stack_gap(current_state.iseq)));
+        }
+
         current_state = function.frame_state(caller);
     }
     stack
@@ -3480,7 +3529,7 @@ fn gen_prepare_non_leaf_call(jit: &JITState, asm: &mut Assembler, function: &Fun
 
     // Remember the stack map in case it raises an exception
     // and the interpreter uses the stack for handling the exception
-    asm.stack_map(stack_map, jit_frame, state.depth);
+    asm.stack_map(stack_map, jit_frame, jit_frame_depth(state));
 
     // Spill locals in case the method looks at caller Bindings
     gen_spill_locals(jit, asm, state);
@@ -3654,7 +3703,7 @@ fn build_caller_stack_map(jit: &JITState, function: &Function, state: &FrameStat
     }
 
     let jit_frame = jit_frame_for_state(&caller_state, stack_map.len());
-    Some(StackMap::new(stack_map, jit_frame, caller_state.depth))
+    Some(StackMap::new(stack_map, jit_frame, jit_frame_depth(&caller_state)))
 }
 
 #[cfg(target_arch = "x86_64")]
