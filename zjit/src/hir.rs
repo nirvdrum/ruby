@@ -9,7 +9,7 @@ use crate::{
     backend::lir::C_ARG_OPNDS, cast::IntoUsize, codegen::max_iseq_versions, cruby::*, invariants::{self, iseq_seen_ep_escape}, json::Json, options::{DumpHIR, InlineDepth, debug, get_option}, payload::get_or_create_iseq_payload, profile::reset_profiles_remaining, state::{self, ZJITState},
 };
 use std::{
-    cell::RefCell, collections::{HashMap, HashSet, VecDeque}, ffi::{c_void, c_uint, c_int, CStr}, fmt::Display, ptr, slice::Iter,
+    cell::RefCell, collections::{HashMap, HashSet, VecDeque}, ffi::{c_void, c_uint, c_int, CStr}, fmt::Display, ptr, rc::Rc, slice::Iter,
     sync::atomic::Ordering,
 };
 use crate::hir_type::{Type, types};
@@ -5275,6 +5275,15 @@ impl Function {
                     continue;
                 }
 
+                // Virtual inline frames cannot describe a literal block handler
+                // statically: it captures the caller frame at runtime, and the
+                // block can write the caller's locals through the EP, which a
+                // virtual frame does not have. Such sends stay as SendDirect.
+                if crate::codegen::VIRTUAL_INLINE_FRAMES && blockiseq.is_some() {
+                    search_start = send_pos + 1;
+                    continue;
+                }
+
                 // Snapshot the caller's HIR length so we can roll back if compiling
                 // the callee fails or its body has no return paths. add_iseq_to_hir
                 // appends to the caller in place, so on rejection we truncate the
@@ -5335,6 +5344,64 @@ impl Function {
                 let chain_sp_base = call_state.chain_sp_base()
                     + u32::try_from(caller_stack_size + callee_gap).unwrap();
 
+                // The static descriptor plan for the callee's inline chain.
+                // Frame type and specval mirror gen_push_inline_frame: bmethods
+                // get a block frame with the Proc's captured EP tagged like
+                // VM_GUARDED_PREV_EP(); everything else is a local method
+                // frame with no block handler. Literal-block sends cannot be
+                // described statically (their handler captures the caller
+                // frame at runtime), which is why they are not inlined under
+                // virtual inline frames.
+                let (frame_type, specval) = if VM_METHOD_TYPE_BMETHOD == unsafe { get_cme_def_type(cme) } {
+                    let procv = unsafe { rb_get_def_bmethod_proc((*cme).def) };
+                    let proc = unsafe { rb_jit_get_proc_ptr(procv) };
+                    let proc_block = unsafe { &(*proc).block };
+                    let capture = unsafe { proc_block.as_.captured.as_ref() };
+                    let bmethod_frame_type = VM_FRAME_MAGIC_BLOCK | VM_FRAME_FLAG_BMETHOD | VM_FRAME_FLAG_LAMBDA;
+                    (bmethod_frame_type as u64, (capture.ep.addr() | 1) as u64)
+                } else {
+                    ((VM_FRAME_MAGIC_METHOD | VM_ENV_FLAG_LOCAL) as u64, VM_BLOCK_HANDLER_NONE as u64)
+                };
+
+                // The return PC in the caller once the inlined call completes,
+                // which is what the caller's descriptor entry reports while
+                // the callee is the innermost frame.
+                let return_pc = unsafe { call_state.pc.offset(insn_len(call_state.get_opcode().try_into().unwrap()) as isize) };
+
+                let mut chain_plan = Vec::with_capacity(
+                    call_state.inline_chain().map_or(2, |chain| chain.len() + 1));
+                chain_plan.push(InlineFramePlan {
+                    pc: std::ptr::null(),
+                    iseq,
+                    cme,
+                    frame_type,
+                    specval,
+                    sp_base: chain_sp_base,
+                });
+                match call_state.inline_chain() {
+                    // The caller is itself inlined: its plan's innermost entry
+                    // gains the now-known return PC and the rest carries over.
+                    Some(caller_chain) => {
+                        let mut caller_entry = caller_chain[0].clone();
+                        caller_entry.pc = return_pc;
+                        chain_plan.push(caller_entry);
+                        chain_plan.extend(caller_chain[1..].iter().cloned());
+                    }
+                    // The caller is the physical frame: synthesize its final
+                    // entry, which only reports location (cme comes from the
+                    // EP as usual for physical frames).
+                    None => {
+                        chain_plan.push(InlineFramePlan {
+                            pc: return_pc,
+                            iseq: call_state.iseq,
+                            cme: std::ptr::null(),
+                            frame_type: 0,
+                            specval: 0,
+                            sp_base: 0,
+                        });
+                    }
+                }
+
                 let mode = AddIseqMode::Inlined {
                     return_block: continuation,
                     caller: post_send_caller,
@@ -5342,6 +5409,7 @@ impl Function {
                     jit_entry_idx: passed_opt_num,
                     blockiseq,
                     chain_sp_base,
+                    inline_chain: Rc::new(chain_plan),
                 };
                 let add_result = match add_iseq_to_hir(self, iseq, mode) {
                     Ok(r) => r,
@@ -7481,6 +7549,33 @@ impl<'a> std::fmt::Display for FunctionPrinter<'a> {
     }
 }
 
+/// One statically known entry of an inline chain, the compile-time plan for
+/// a `zjit_inline_frame_t` descriptor (see zjit.h). Built once per inlined
+/// call site because everything but the innermost frame's PC is fixed at
+/// inline time; codegen fills that PC in per JITFrame site.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InlineFramePlan {
+    /// The return PC at this frame's call into the next-deeper frame. Null
+    /// for the innermost entry, whose PC varies per JITFrame site.
+    pub pc: *const VALUE,
+    /// The frame's ISEQ.
+    pub iseq: IseqPtr,
+    /// The frame's method entry. Null for the final (physical frame) entry,
+    /// which resolves its cme through the EP as usual.
+    pub cme: *const rb_callable_method_entry_t,
+    /// VM_FRAME_MAGIC_* | flags for materializing ep[0]. Unused for the
+    /// final (physical frame) entry.
+    pub frame_type: u64,
+    /// Static ep[-1] value: VM_BLOCK_HANDLER_NONE or a tagged captured EP
+    /// for bmethods. Sends that pass a literal block are not inlined under
+    /// virtual inline frames because their block handler captures the
+    /// caller frame at runtime. Unused for the final entry.
+    pub specval: u64,
+    /// This frame's VM stack offset from the physical frame's SP register.
+    /// See [`FrameState::chain_sp_base`]. Zero for the final entry.
+    pub sp_base: u32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameState {
     pub iseq: IseqPtr,
@@ -7514,6 +7609,12 @@ pub struct FrameState {
     /// this base to its slot offsets. Computed once at inline time because
     /// the caller chain, and therefore the offset, never changes afterwards.
     chain_sp_base: u32,
+
+    /// The static plan for this frame's inline chain descriptors, innermost
+    /// first with the final entry describing the physical frame. None for
+    /// non-inlined frames. Shared via Rc because every Snapshot cloned from
+    /// this frame carries the same immutable plan.
+    inline_chain: Option<Rc<Vec<InlineFramePlan>>>,
 }
 
 impl FrameState {
@@ -7575,21 +7676,28 @@ pub struct FrameStatePrinter<'a> {
 
 impl FrameState {
     fn new(iseq: IseqPtr) -> FrameState {
-        FrameState { iseq, pc: std::ptr::null::<VALUE>(), insn_idx: 0, stack: vec![], locals: vec![], caller: None, depth: 0, chain_sp_base: 0 }
+        FrameState { iseq, pc: std::ptr::null::<VALUE>(), insn_idx: 0, stack: vec![], locals: vec![], caller: None, depth: 0, chain_sp_base: 0, inline_chain: None }
     }
 
     /// Construct a `FrameState` for an inlined callee. `caller` is the `InsnId`
     /// of the caller's post-send `Snapshot`; `depth` is this frame's inlining
     /// depth; `chain_sp_base` is the callee frame's VM stack offset from the
-    /// physical frame's SP (see the field documentation).
-    fn inlined(iseq: IseqPtr, caller: InsnId, depth: InlineDepth, chain_sp_base: u32) -> FrameState {
-        FrameState { caller: Some(caller), depth, chain_sp_base, ..FrameState::new(iseq) }
+    /// physical frame's SP (see the field documentation); `inline_chain` is
+    /// the static descriptor plan for this frame's chain.
+    fn inlined(iseq: IseqPtr, caller: InsnId, depth: InlineDepth, chain_sp_base: u32, inline_chain: Rc<Vec<InlineFramePlan>>) -> FrameState {
+        FrameState { caller: Some(caller), depth, chain_sp_base, inline_chain: Some(inline_chain), ..FrameState::new(iseq) }
     }
 
     /// This frame's VM stack offset, in slots, from the physical frame's SP.
     /// See the field documentation for how it is computed.
     pub fn chain_sp_base(&self) -> u32 {
         self.chain_sp_base
+    }
+
+    /// The static plan for this frame's inline chain descriptors, or None
+    /// for non-inlined frames.
+    pub fn inline_chain(&self) -> Option<&Rc<Vec<InlineFramePlan>>> {
+        self.inline_chain.as_ref()
     }
 
     /// Get the number of stack operands
@@ -7929,7 +8037,7 @@ fn invalidates_locals(opcode: u32, operands: *const VALUE) -> bool {
 pub const SELF_PARAM_IDX: usize = 0;
 
 /// Controls how an ISEQ's bytecode is added to HIR.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum AddIseqMode {
     Standalone,
     Inlined {
@@ -7945,6 +8053,9 @@ enum AddIseqMode {
         /// The callee frame's VM stack offset from the physical frame's SP.
         /// See [`FrameState::chain_sp_base`].
         chain_sp_base: u32,
+        /// The static descriptor plan for the callee frame's inline chain.
+        /// See [`FrameState::inline_chain`].
+        inline_chain: Rc<Vec<InlineFramePlan>>,
     },
 }
 
@@ -8014,9 +8125,10 @@ fn add_iseq_to_hir(
     // because every Snapshot emitted for the callee is cloned from one of these
     // initial states, those values propagate to the whole inlined body without a
     // separate rewrite pass.
-    fn new_frame_state(mode: AddIseqMode, iseq: IseqPtr) -> FrameState {
+    fn new_frame_state(mode: &AddIseqMode, iseq: IseqPtr) -> FrameState {
         match mode {
-            AddIseqMode::Inlined { caller, depth, chain_sp_base, .. } => FrameState::inlined(iseq, caller, depth, chain_sp_base),
+            AddIseqMode::Inlined { caller, depth, chain_sp_base, inline_chain, .. } =>
+                FrameState::inlined(iseq, *caller, *depth, *chain_sp_base, Rc::clone(inline_chain)),
             AddIseqMode::Standalone => FrameState::new(iseq),
         }
     }
@@ -8104,7 +8216,7 @@ fn add_iseq_to_hir(
     // TODO(max): Basic block arguments at edges
     let mut queue = VecDeque::new();
     for &insn_idx in jit_entry_insns.iter() {
-        queue.push_back((new_frame_state(mode, iseq), insn_idx_to_block[&insn_idx], /*insn_idx=*/insn_idx, /*local_inval=*/false));
+        queue.push_back((new_frame_state(&mode, iseq), insn_idx_to_block[&insn_idx], /*insn_idx=*/insn_idx, /*local_inval=*/false));
     }
 
     // Keep compiling blocks until the queue becomes empty
@@ -8118,7 +8230,7 @@ fn add_iseq_to_hir(
         // Load basic block params first
         let mut self_param = fun.push_insn(block, Insn::Param);
         let mut state = {
-            let mut result = new_frame_state(mode, iseq);
+            let mut result = new_frame_state(&mode, iseq);
             let local_size = if jit_entry_insns.contains(&insn_idx) { num_locals(iseq) } else { incoming_state.locals.len() };
             for _ in 0..local_size {
                 result.locals.push(fun.push_insn(block, Insn::Param));

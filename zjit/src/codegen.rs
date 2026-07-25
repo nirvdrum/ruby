@@ -24,7 +24,7 @@ use crate::stats::{counter_ptr, with_time_stat, trace_compile_phase, Counter, Co
 use crate::{asm::CodeBlock, cruby::*, options::debug, virtualmem::CodePtr};
 use crate::backend::lir::{self, Assembler, C_ARG_OPNDS, C_RET_OPND, CFP, EC, NATIVE_BASE_PTR, Opnd, SP, SideExit, SideExitRecompile, SideExitTarget, StackMap, StackMapEntry, Target, asm_ccall, asm_comment};
 use crate::hir::{self, iseq_to_hir, BlockId, Invariant, RangeType, SideExitReason::{self, *}, SpecialBackrefSymbol, SpecialObjectType};
-use crate::hir::{BlockHandler, CCallVariadicData, CCallWithFrameData, Const, FieldName, FrameState, Function, Insn, InsnId, Recompile, SendDirectData, SendFallbackReason, qualified_method_name};
+use crate::hir::{BlockHandler, CCallVariadicData, CCallWithFrameData, Const, FieldName, FrameState, Function, InlineFramePlan, Insn, InsnId, Recompile, SendDirectData, SendFallbackReason, qualified_method_name};
 use crate::hir_type::{types, Type};
 use crate::options::{get_option, InlineDepth, PerfMap, DEFAULT_MAX_VERSIONS};
 use crate::cast::IntoUsize;
@@ -3268,7 +3268,39 @@ fn jit_frame_next_pc(state: &FrameState) -> *const VALUE {
 }
 
 fn jit_frame_for_state(state: &FrameState, stack_map_size: usize) -> *const zjit_jit_frame {
-    JITFrame::new_iseq(jit_frame_next_pc(state), state.iseq, stack_map_size)
+    let pc = jit_frame_next_pc(state);
+
+    // Under virtual inline frames, a JITFrame created at an inlined depth
+    // carries descriptors for every logical frame the physical CFP
+    // represents. The plan is static per call site except the innermost
+    // frame's PC, which is this site's.
+    if VIRTUAL_INLINE_FRAMES {
+        if let Some(plan) = state.inline_chain() {
+            let chain = build_inline_chain(plan, pc);
+            return JITFrame::new_iseq_with_chain(pc, state.iseq, stack_map_size, chain);
+        }
+    }
+
+    JITFrame::new_iseq(pc, state.iseq, stack_map_size)
+}
+
+/// Convert a static inline chain plan into descriptor entries, filling in
+/// the innermost frame's PC for this JITFrame site. The receiver slot is
+/// not carried in the descriptor; it is delivered through the stack map
+/// (see build_stack_map), so `recv` stays zero here.
+fn build_inline_chain(plan: &[InlineFramePlan], innermost_pc: *const VALUE) -> Vec<crate::jit_frame::InlineFrame> {
+    plan.iter().enumerate().map(|(index, entry)| {
+        debug_assert_eq!(index == 0, entry.pc.is_null(), "only the innermost plan entry has a per-site PC");
+        crate::jit_frame::InlineFrame {
+            pc: if index == 0 { innermost_pc } else { entry.pc },
+            iseq: entry.iseq,
+            cme: entry.cme,
+            frame_type: VALUE(entry.frame_type as usize),
+            specval: VALUE(entry.specval as usize),
+            recv: VALUE(0),
+            sp_base: entry.sp_base,
+        }
+    }).collect()
 }
 
 /// Save only the PC to CFP. Use this when you need to call gen_save_sp()
