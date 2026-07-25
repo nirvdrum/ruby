@@ -1047,7 +1047,7 @@ fn gen_ccall_with_frame(
     // Can't use gen_prepare_non_leaf_call() because we need to adjust the SP
     // to account for the receiver and arguments (and block arguments if any)
     gen_write_jit_frame(asm, state, 0);
-    gen_save_sp(asm, caller_stack_size);
+    gen_save_sp(asm, virtual_sp_base(state) + caller_stack_size);
     gen_spill_stack(jit, asm, function, state);
     gen_spill_locals(jit, asm, state);
 
@@ -1142,7 +1142,7 @@ fn gen_ccall_variadic(
     // Can't use gen_prepare_non_leaf_call() because we need to adjust the SP
     // to account for the receiver and arguments (like gen_ccall_with_frame does)
     gen_write_jit_frame(asm, state, 0);
-    gen_save_sp(asm, caller_stack_size);
+    gen_save_sp(asm, virtual_sp_base(state) + caller_stack_size);
     gen_spill_stack(jit, asm, function, state);
     gen_spill_locals(jit, asm, state);
 
@@ -1588,7 +1588,7 @@ fn gen_push_inline_frame(
     // Cannot use gen_prepare_non_leaf_call because we need special SP math.
     let stack_size = state.stack().len() - args.len() - 1; // -1 for receiver
     gen_write_jit_frame(asm, state, 0);
-    gen_save_sp(asm, stack_size);
+    gen_save_sp(asm, virtual_sp_base(state) + stack_size);
 
     gen_spill_locals(jit, asm, state);
 
@@ -1727,7 +1727,7 @@ fn gen_send_iseq_direct(
     let stack_size = state.stack().len() - args.len() - 1; // -1 for receiver
     let stack_map = build_stack_map(jit, function, &state.with_stack_size(stack_size));
     let jit_frame = gen_write_jit_frame(asm, state, stack_map.len());
-    gen_save_sp(asm, stack_size);
+    gen_save_sp(asm, virtual_sp_base(state) + stack_size);
 
     gen_spill_locals(jit, asm, state);
     asm.stack_map(stack_map, jit_frame, state.depth);
@@ -1776,13 +1776,16 @@ fn gen_send_iseq_direct(
         let keyword = unsafe { rb_get_iseq_body_param_keyword(iseq) };
         let bits_start = unsafe { (*keyword).bits_start } as usize;
         let unspecified_bits = VALUE::fixnum_from_usize(kw_bits as usize);
-        let bits_offset = (state.stack().len() - args.len() + bits_start) * SIZEOF_VALUE;
+        let bits_offset = (virtual_sp_base(state) + state.stack().len() - args.len() + bits_start) * SIZEOF_VALUE;
         asm_comment!(asm, "write keyword bits to callee frame");
         asm.store(Opnd::mem(64, SP, bits_offset as i32), unspecified_bits.into());
     }
 
     asm_comment!(asm, "switch to new SP register");
-    let sp_offset = (state.stack().len() + local_size - args.len() + VM_ENV_DATA_SIZE.to_usize()) * SIZEOF_VALUE;
+    // The callee's SP sits above the caller frame's chain offset: with
+    // virtual inline frames the SP register is pinned to the physical frame
+    // while `state` describes the (possibly inlined) caller.
+    let sp_offset = (virtual_sp_base(state) + state.stack().len() + local_size - args.len() + VM_ENV_DATA_SIZE.to_usize()) * SIZEOF_VALUE;
     let new_sp = asm.add(SP, sp_offset.into());
     asm.mov(SP, new_sp);
 
@@ -1957,7 +1960,7 @@ fn gen_invoke_block_iseq_direct(
     let stack_size = state.stack().len() - args.len();
     let stack_map = build_stack_map(jit, function, &state.with_stack_size(stack_size));
     let jit_frame = gen_write_jit_frame(asm, state, stack_map.len());
-    gen_save_sp(asm, stack_size);
+    gen_save_sp(asm, virtual_sp_base(state) + stack_size);
 
     gen_spill_locals(jit, asm, state);
     asm.stack_map(stack_map, jit_frame, state.depth);
@@ -2266,7 +2269,7 @@ fn gen_opt_newarray_hash(
 
     // After gen_prepare_non_leaf_call, the elements are spilled to the Ruby stack.
     // Get a pointer to the first element on the Ruby stack.
-    let stack_bottom = state.stack().len() - elements.len();
+    let stack_bottom = virtual_sp_base(state) + state.stack().len() - elements.len();
     let elements_ptr = asm.lea(Opnd::mem(64, SP, stack_bottom as i32 * SIZEOF_VALUE_I32));
 
     unsafe extern "C" {
@@ -2293,7 +2296,7 @@ fn gen_array_max(
 
     // After gen_prepare_non_leaf_call, the elements are spilled to the Ruby stack.
     // Get a pointer to the first element on the Ruby stack.
-    let stack_bottom = state.stack().len() - elements.len();
+    let stack_bottom = virtual_sp_base(state) + state.stack().len() - elements.len();
     let elements_ptr = asm.lea(Opnd::mem(VALUE_BITS, SP, stack_bottom as i32 * SIZEOF_VALUE_I32));
 
     unsafe extern "C" {
@@ -2320,7 +2323,7 @@ fn gen_array_min(
 
     // After gen_prepare_non_leaf_call, the elements are spilled to the Ruby stack.
     // Get a pointer to the first element on the Ruby stack.
-    let stack_bottom = state.stack().len() - elements.len();
+    let stack_bottom = virtual_sp_base(state) + state.stack().len() - elements.len();
     let elements_ptr = asm.lea(Opnd::mem(VALUE_BITS, SP, stack_bottom as i32 * SIZEOF_VALUE_I32));
 
     unsafe extern "C" {
@@ -2348,7 +2351,7 @@ fn gen_array_include(
     // After gen_prepare_non_leaf_call, the elements are spilled to the Ruby stack.
     // The elements are at the bottom of the virtual stack, followed by the target.
     // Get a pointer to the first element on the Ruby stack.
-    let stack_bottom = state.stack().len() - elements.len() - 1;
+    let stack_bottom = virtual_sp_base(state) + state.stack().len() - elements.len() - 1;
     let elements_ptr = asm.lea(Opnd::mem(64, SP, stack_bottom as i32 * SIZEOF_VALUE_I32));
 
     unsafe extern "C" {
@@ -2378,9 +2381,9 @@ fn gen_array_pack_buffer(
     // The elements are at the bottom of the virtual stack, followed by the fmt, and optionally the buffer.
     // Get a pointer to the first element on the Ruby stack.
     let stack_bottom = if buffer.is_some() {
-        state.stack().len() - elements.len() - 2
+        virtual_sp_base(state) + state.stack().len() - elements.len() - 2
     } else {
-        state.stack().len() - elements.len() - 1
+        virtual_sp_base(state) + state.stack().len() - elements.len() - 1
     };
     let elements_ptr = asm.lea(Opnd::mem(64, SP, stack_bottom as i32 * SIZEOF_VALUE_I32));
 
@@ -3297,9 +3300,9 @@ fn gen_write_jit_frame(asm: &mut Assembler, state: &FrameState, stack_map_size: 
 /// which may have cfp->sp for a past frame or a past non-leaf call.
 fn gen_prepare_call_with_gc(asm: &mut Assembler, state: &FrameState, leaf: bool, stack_map_size: usize) -> *const zjit_jit_frame {
     let jit_frame = gen_write_jit_frame(asm, state, stack_map_size);
-    gen_save_sp(asm, state.stack_size());
+    gen_save_sp(asm, virtual_sp_base(state) + state.stack_size());
     if leaf {
-        asm.expect_leaf_ccall(state.stack_size());
+        asm.expect_leaf_ccall(virtual_sp_base(state) + state.stack_size());
     }
     jit_frame
 }
@@ -3321,6 +3324,30 @@ fn gen_prepare_leaf_call_with_gc(asm: &mut Assembler, state: &FrameState) {
     gen_prepare_call_with_gc(asm, &state.without_stack(), true, 0);
 }
 
+/// Whether inlined callees run without physical control frames. This is
+/// groundwork for the virtual inline frames project: frame-relative codegen
+/// already routes its slot offsets through virtual_sp_base(), which is zero
+/// while this is false, so flipping it (eventually via a runtime option)
+/// only changes behavior at inlined depths. The codegen flip that elides
+/// gen_push_inline_frame's stores and the vm.c materializer must land before
+/// this can be enabled.
+pub(crate) const VIRTUAL_INLINE_FRAMES: bool = false;
+
+/// The VM stack offset, in slots, that frame-relative codegen must add to a
+/// frame's slot offsets. With physical inline frames the SP register is
+/// bumped at every inline frame push, so offsets are frame-relative and the
+/// base is zero. With virtual inline frames the SP register stays pinned to
+/// the physical frame and each inlined frame's slots live at its chain
+/// offset above it.
+fn virtual_sp_base(state: &FrameState) -> usize {
+    if VIRTUAL_INLINE_FRAMES {
+        state.chain_sp_base().to_usize()
+    }
+    else {
+        0
+    }
+}
+
 /// Save the current SP on the CFP
 fn gen_save_sp(asm: &mut Assembler, stack_size: usize) {
     // Update cfp->sp which will be read by the interpreter. We also have the SP register in JIT
@@ -3339,8 +3366,9 @@ fn gen_spill_locals(jit: &JITState, asm: &mut Assembler, state: &FrameState) {
     // TODO: Avoid spilling locals that have been spilled before and not changed.
     gen_incr_counter(asm, Counter::vm_write_locals_count);
     asm_comment!(asm, "spill locals");
+    let sp_base = virtual_sp_base(state) as i32;
     for (idx, &insn_id) in state.locals().enumerate() {
-        asm.mov(Opnd::mem(64, SP, (-local_idx_to_ep_offset(state.iseq, idx) - 1) * SIZEOF_VALUE_I32), jit.get_opnd(insn_id));
+        asm.mov(Opnd::mem(64, SP, (sp_base - local_idx_to_ep_offset(state.iseq, idx) - 1) * SIZEOF_VALUE_I32), jit.get_opnd(insn_id));
     }
 }
 
@@ -3351,7 +3379,7 @@ fn gen_spill_stack(jit: &JITState, asm: &mut Assembler, function: &Function, sta
     gen_incr_counter(asm, Counter::vm_write_stack_count);
     asm_comment!(asm, "spill stack");
 
-    let mut offset = state.stack_size() as i32;
+    let mut offset = (virtual_sp_base(state) + state.stack_size()) as i32;
     for entry in build_stack_map(jit, function, state) {
         match entry {
             StackMapEntry::Opnd(opnd) => {
@@ -3372,7 +3400,7 @@ fn gen_spill_stack(jit: &JITState, asm: &mut Assembler, function: &Function, sta
 /// metadata below the real VM-stack base.
 fn gen_prepare_fallback_call(jit: &JITState, asm: &mut Assembler, function: &Function, state: &FrameState) {
     gen_write_jit_frame(asm, state, 0);
-    gen_save_sp(asm, state.stack_size());
+    gen_save_sp(asm, virtual_sp_base(state) + state.stack_size());
     gen_spill_locals(jit, asm, state);
     gen_spill_stack(jit, asm, function, state);
 }
@@ -3452,7 +3480,7 @@ fn gen_push_frame(asm: &mut Assembler, argc: usize, state: &FrameState, frame: C
     } else {
         0
     };
-    let ep_offset = state.stack().len() as i32 + local_size - argc as i32 + VM_ENV_DATA_SIZE as i32 - 1;
+    let ep_offset = virtual_sp_base(state) as i32 + state.stack().len() as i32 + local_size - argc as i32 + VM_ENV_DATA_SIZE as i32 - 1;
     // ep[-2]: CME
     asm.store(Opnd::mem(64, SP, (ep_offset - 2) * SIZEOF_VALUE_I32), VALUE::from(frame.cme).into());
     // ep[-1]: specval

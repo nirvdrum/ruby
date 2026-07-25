@@ -5324,12 +5324,24 @@ impl Function {
                 // The callee's perspective of the stack is with the receiver and arguments popped off.
                 let caller_stack_size = call_state.stack_size() - args.len() - 1; // -1 for receiver
                 let post_send_caller = self.new_insn(Insn::Snapshot { state: Box::new(call_state.with_stack_size(caller_stack_size)) });
+
+                // The callee frame's VM stack offset from the physical frame's
+                // SP: the caller's own offset, plus the caller's remaining
+                // stack, plus the callee's frame gap (receiver slot, local
+                // table, env data). This mirrors the SP bump formula in
+                // gen_push_inline_frame and the Skip gap in build_stack_map.
+                let callee_local_size = (unsafe { get_iseq_body_local_table_size(iseq) }).to_usize();
+                let callee_gap = 1 + callee_local_size + VM_ENV_DATA_SIZE.to_usize();
+                let chain_sp_base = call_state.chain_sp_base()
+                    + u32::try_from(caller_stack_size + callee_gap).unwrap();
+
                 let mode = AddIseqMode::Inlined {
                     return_block: continuation,
                     caller: post_send_caller,
                     depth: caller_depth + 1,
                     jit_entry_idx: passed_opt_num,
                     blockiseq,
+                    chain_sp_base,
                 };
                 let add_result = match add_iseq_to_hir(self, iseq, mode) {
                     Ok(r) => r,
@@ -7492,6 +7504,16 @@ pub struct FrameState {
     /// `cfp->jit_return` values do not alias across the shared native stack frame.
     /// This value's upper bound is the `inline_max_iterations` value.
     pub depth: InlineDepth,
+
+    /// This frame's VM stack offset, in slots, from the physical (depth 0)
+    /// frame's SP. Zero for non-inlined frames. For an inlined callee it is
+    /// the caller's offset plus the caller's stack size at the call (with
+    /// receiver and arguments popped) plus the callee's frame gap (receiver
+    /// slot, local table, env data). Virtual inline frames leave the SP
+    /// register pinned to the physical frame, so frame-relative codegen adds
+    /// this base to its slot offsets. Computed once at inline time because
+    /// the caller chain, and therefore the offset, never changes afterwards.
+    chain_sp_base: u32,
 }
 
 impl FrameState {
@@ -7553,13 +7575,21 @@ pub struct FrameStatePrinter<'a> {
 
 impl FrameState {
     fn new(iseq: IseqPtr) -> FrameState {
-        FrameState { iseq, pc: std::ptr::null::<VALUE>(), insn_idx: 0, stack: vec![], locals: vec![], caller: None, depth: 0 }
+        FrameState { iseq, pc: std::ptr::null::<VALUE>(), insn_idx: 0, stack: vec![], locals: vec![], caller: None, depth: 0, chain_sp_base: 0 }
     }
 
     /// Construct a `FrameState` for an inlined callee. `caller` is the `InsnId`
-    /// of the caller's post-send `Snapshot`; `depth` is this frame's inlining depth.
-    fn inlined(iseq: IseqPtr, caller: InsnId, depth: InlineDepth) -> FrameState {
-        FrameState { caller: Some(caller), depth, ..FrameState::new(iseq) }
+    /// of the caller's post-send `Snapshot`; `depth` is this frame's inlining
+    /// depth; `chain_sp_base` is the callee frame's VM stack offset from the
+    /// physical frame's SP (see the field documentation).
+    fn inlined(iseq: IseqPtr, caller: InsnId, depth: InlineDepth, chain_sp_base: u32) -> FrameState {
+        FrameState { caller: Some(caller), depth, chain_sp_base, ..FrameState::new(iseq) }
+    }
+
+    /// This frame's VM stack offset, in slots, from the physical frame's SP.
+    /// See the field documentation for how it is computed.
+    pub fn chain_sp_base(&self) -> u32 {
+        self.chain_sp_base
     }
 
     /// Get the number of stack operands
@@ -7912,6 +7942,9 @@ enum AddIseqMode {
         jit_entry_idx: usize,
         /// The literal block the caller passed to this frame, if any.
         blockiseq: Option<IseqPtr>,
+        /// The callee frame's VM stack offset from the physical frame's SP.
+        /// See [`FrameState::chain_sp_base`].
+        chain_sp_base: u32,
     },
 }
 
@@ -7983,7 +8016,7 @@ fn add_iseq_to_hir(
     // separate rewrite pass.
     fn new_frame_state(mode: AddIseqMode, iseq: IseqPtr) -> FrameState {
         match mode {
-            AddIseqMode::Inlined { caller, depth, .. } => FrameState::inlined(iseq, caller, depth),
+            AddIseqMode::Inlined { caller, depth, chain_sp_base, .. } => FrameState::inlined(iseq, caller, depth, chain_sp_base),
             AddIseqMode::Standalone => FrameState::new(iseq),
         }
     }
