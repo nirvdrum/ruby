@@ -44,6 +44,7 @@ impl JITFrame {
                 materialize_block_code,
                 stack_size: stack_size.try_into().unwrap(),
                 inline_count: 0,
+                sp_offset: 0,
                 inline_frames: ptr::null(),
                 stack: __IncompleteArrayField::new(),
             });
@@ -67,11 +68,16 @@ impl JITFrame {
     /// The chain must be non-empty and its first entry's pc/iseq must match
     /// the pc/iseq passed here, which continue to describe the innermost
     /// frame for CFP_PC/CFP_ISEQ compatibility.
+    /// `sp_offset` is the distance in VALUE slots from the physical frame's
+    /// initial stack pointer to the cfp->sp value the publishing site saves,
+    /// letting materialization recover the base even after the frame's
+    /// environment escapes to the heap (see zjit_jit_frame_t in zjit.h).
     pub fn new_iseq_with_chain(
         pc: *const VALUE,
         iseq: IseqPtr,
         stack_size: usize,
         chain: Vec<InlineFrame>,
+        sp_offset: usize,
     ) -> *const Self {
         assert!(!chain.is_empty(), "inline chains must describe at least the physical frame");
         assert_eq!(pc, chain[0].pc);
@@ -85,6 +91,7 @@ impl JITFrame {
         unsafe {
             let frame = frame.cast_mut();
             (*frame).inline_count = inline_count;
+            (*frame).sp_offset = sp_offset.try_into().unwrap();
             (*frame).inline_frames = inline_frames;
         }
         frame

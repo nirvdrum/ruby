@@ -237,6 +237,7 @@ make_counters! {
         exit_invoke_block_handler_not_iseq,
         exit_invoke_block_iseq_changed,
         exit_block_param_wb_required,
+        exit_virtual_frame_dynamic_send,
         exit_too_many_keyword_parameters,
         exit_too_many_args_for_lir,
         exit_no_profile_send,
@@ -477,6 +478,7 @@ make_counters! {
     inline_reject_compile_failure,
     inline_reject_no_returns,
     inline_reject_budget_exceeded,
+    inline_reject_block_dependent,
 
     getblockparamproxy_handler_iseq,
     getblockparamproxy_handler_ifunc,
@@ -630,6 +632,7 @@ pub fn side_exit_counter(reason: crate::hir::SideExitReason) -> Counter {
         InvokeBlockHandlerNotIseq     => exit_invoke_block_handler_not_iseq,
         InvokeBlockIseqChanged        => exit_invoke_block_iseq_changed,
         BlockParamWbRequired          => exit_block_param_wb_required,
+        VirtualFrameDynamicSend       => exit_virtual_frame_dynamic_send,
         TooManyKeywordParameters      => exit_too_many_keyword_parameters,
         TooManyArgsForLir             => exit_too_many_args_for_lir,
         SplatKwNotNilOrHash           => exit_splatkw_not_nil_or_hash,

@@ -1036,7 +1036,8 @@ fn gen_ccall_with_frame(
     state: &FrameState,
 ) -> lir::Opnd {
     gen_incr_counter(asm, Counter::non_variadic_cfunc_optimized_send_count);
-    gen_stack_overflow_check(jit, asm, function, state, state.stack_size());
+
+    gen_stack_overflow_check(jit, asm, function, state, virtual_sp_base(state) + state.stack_size());
 
     let args_with_recv_len = args.len() + 1;
     if args_with_recv_len > C_ARG_OPNDS.len() {
@@ -1046,7 +1047,7 @@ fn gen_ccall_with_frame(
 
     // Can't use gen_prepare_non_leaf_call() because we need to adjust the SP
     // to account for the receiver and arguments (and block arguments if any)
-    gen_write_jit_frame(asm, state, 0);
+    gen_write_jit_frame(asm, state, 0, virtual_sp_base(state) + caller_stack_size);
     gen_save_sp(asm, virtual_sp_base(state) + caller_stack_size);
     gen_spill_stack(jit, asm, function, state);
     gen_spill_locals(jit, asm, state);
@@ -1131,7 +1132,8 @@ fn gen_ccall_variadic(
     state: &FrameState,
 ) -> lir::Opnd {
     gen_incr_counter(asm, Counter::variadic_cfunc_optimized_send_count);
-    gen_stack_overflow_check(jit, asm, function, state, state.stack_size());
+
+    gen_stack_overflow_check(jit, asm, function, state, virtual_sp_base(state) + state.stack_size());
 
     let args_with_recv_len = args.len() + 1;
 
@@ -1141,7 +1143,7 @@ fn gen_ccall_variadic(
 
     // Can't use gen_prepare_non_leaf_call() because we need to adjust the SP
     // to account for the receiver and arguments (like gen_ccall_with_frame does)
-    gen_write_jit_frame(asm, state, 0);
+    gen_write_jit_frame(asm, state, 0, virtual_sp_base(state) + caller_stack_size);
     gen_save_sp(asm, virtual_sp_base(state) + caller_stack_size);
     gen_spill_stack(jit, asm, function, state);
     gen_spill_locals(jit, asm, state);
@@ -1582,7 +1584,19 @@ fn gen_push_inline_frame(
 ) {
     let local_size = unsafe { get_iseq_body_local_table_size(iseq) }.to_usize();
     let stack_growth = state.stack_size() + local_size + unsafe { get_iseq_body_stack_max(iseq) }.to_usize();
-    gen_stack_overflow_check(jit, asm, function, state, virtual_sp_base(state) + stack_growth);
+
+    // Under virtual inline frames the CFP register never moves, so the
+    // check must also reserve one control frame slot per inline depth:
+    // materialization synthesizes that many CFPs (shifting any younger
+    // frames down), and the physical pushes that used to consume them one
+    // by one no longer happen.
+    let synthesized_cfp_slots = if VIRTUAL_INLINE_FRAMES {
+        (state.depth as usize + 1) * (RUBY_SIZEOF_CONTROL_FRAME / SIZEOF_VALUE)
+    }
+    else {
+        0
+    };
+    gen_stack_overflow_check(jit, asm, function, state, virtual_sp_base(state) + synthesized_cfp_slots + stack_growth);
 
     // Under virtual inline frames no physical frame is pushed at all: the
     // SP and CFP registers stay pinned to the physical frame, ec->cfp is
@@ -1595,13 +1609,22 @@ fn gen_push_inline_frame(
     if VIRTUAL_INLINE_FRAMES {
         debug_assert!(blockiseq.is_none(), "literal-block sends are not inlined under virtual inline frames");
         gen_spill_locals(jit, asm, state);
+
+        // Record the control frame space that materializing this virtual
+        // frame would consume, so every later stack overflow check keeps
+        // the room reservable. See gen_stack_overflow_check.
+        asm_comment!(asm, "increment virtual inline frame debt");
+        let debt_mem = Opnd::mem(64, EC, RUBY_OFFSET_EC_ZJIT_INLINE_FRAME_DEBT as i32);
+        let debt = asm.load(debt_mem);
+        let new_debt = asm.add(debt, RUBY_SIZEOF_CONTROL_FRAME.into());
+        asm.store(debt_mem, new_debt);
         return;
     }
 
     // Save cfp->pc and cfp->sp for the caller frame.
     // Cannot use gen_prepare_non_leaf_call because we need special SP math.
     let stack_size = state.stack().len() - args.len() - 1; // -1 for receiver
-    gen_write_jit_frame(asm, state, 0);
+    gen_write_jit_frame(asm, state, 0, virtual_sp_base(state) + stack_size);
     gen_save_sp(asm, virtual_sp_base(state) + stack_size);
 
     gen_spill_locals(jit, asm, state);
@@ -1703,8 +1726,14 @@ fn gen_pop_inline_frame(
     state: &FrameState,
 ) {
     // Under virtual inline frames nothing was pushed, so there is nothing
-    // to restore: the SP and CFP registers never moved.
+    // to restore: the SP and CFP registers never moved. Only the frame's
+    // materialization debt is retired.
     if VIRTUAL_INLINE_FRAMES {
+        asm_comment!(asm, "decrement virtual inline frame debt");
+        let debt_mem = Opnd::mem(64, EC, RUBY_OFFSET_EC_ZJIT_INLINE_FRAME_DEBT as i32);
+        let debt = asm.load(debt_mem);
+        let new_debt = asm.sub(debt, RUBY_SIZEOF_CONTROL_FRAME.into());
+        asm.store(debt_mem, new_debt);
         return;
     }
 
@@ -1740,13 +1769,13 @@ fn gen_send_iseq_direct(
 
     let local_size = unsafe { get_iseq_body_local_table_size(iseq) }.to_usize();
     let stack_growth = state.stack_size() + local_size + unsafe { get_iseq_body_stack_max(iseq) }.to_usize();
-    gen_stack_overflow_check(jit, asm, function, state, stack_growth);
+    gen_stack_overflow_check(jit, asm, function, state, virtual_sp_base(state) + stack_growth);
 
     // Save cfp->pc and cfp->sp for the caller frame
     // Can't use gen_prepare_non_leaf_call because we need special SP math.
     let stack_size = state.stack().len() - args.len() - 1; // -1 for receiver
     let stack_map = build_stack_map(jit, function, &state.with_stack_size(stack_size));
-    let jit_frame = gen_write_jit_frame(asm, state, stack_map.len());
+    let jit_frame = gen_write_jit_frame(asm, state, stack_map.len(), virtual_sp_base(state) + stack_size);
     gen_save_sp(asm, virtual_sp_base(state) + stack_size);
 
     gen_spill_locals(jit, asm, state);
@@ -1872,6 +1901,7 @@ fn gen_invokeblock(
     gen_incr_send_fallback_counter(asm, reason);
     gen_trace_send_fallback(asm, &reason);
 
+
     gen_prepare_fallback_call(jit, asm, function, state);
 
     asm_comment!(asm, "call invokeblock");
@@ -1979,7 +2009,7 @@ fn gen_invoke_block_iseq_direct(
 
     let stack_size = state.stack().len() - args.len();
     let stack_map = build_stack_map(jit, function, &state.with_stack_size(stack_size));
-    let jit_frame = gen_write_jit_frame(asm, state, stack_map.len());
+    let jit_frame = gen_write_jit_frame(asm, state, stack_map.len(), virtual_sp_base(state) + stack_size);
     gen_save_sp(asm, virtual_sp_base(state) + stack_size);
 
     gen_spill_locals(jit, asm, state);
@@ -2039,6 +2069,7 @@ fn gen_invokesuper(
 ) -> lir::Opnd {
     gen_incr_send_fallback_counter(asm, reason);
     gen_trace_send_fallback(asm, &reason);
+
 
     gen_prepare_fallback_call(jit, asm, function, state);
     asm_comment!(asm, "call super with dynamic dispatch");
@@ -3237,6 +3268,75 @@ pub(crate) fn iseq_may_write_block_code(iseq: IseqPtr) -> bool {
     false
 }
 
+/// True if the ISEQ contains operations a virtual inline frame cannot host:
+/// sends that pass a literal block (the handler captures the home frame's
+/// self and EP at runtime), `invokeblock` (yield reads the handler through
+/// the LEP), and builtin invocations (which may read locals through the EP).
+/// Used by the inliner under VIRTUAL_INLINE_FRAMES to keep such callees as
+/// direct sends with real frames instead of inlining and deopting.
+pub(crate) fn iseq_has_block_dependent_insns(iseq: IseqPtr) -> bool {
+    let encoded_size = unsafe { rb_iseq_encoded_size(iseq) };
+    let mut insn_idx: u32 = 0;
+
+    while insn_idx < encoded_size {
+        let pc = unsafe { rb_iseq_pc_at_idx(iseq, insn_idx) };
+        let opcode = unsafe { rb_iseq_bare_opcode_at_pc(iseq, pc) } as u32;
+
+        match opcode {
+            // send-family opcodes carry the literal block ISEQ as their
+            // second operand; a null operand means no block was passed.
+            YARVINSN_send | YARVINSN_sendforward => {
+                let blockiseq = unsafe { *pc.add(2) };
+                if blockiseq != VALUE(0) {
+                    return true;
+                }
+            }
+            // super resolves the target method from the executing frame's
+            // method entry, read through the EP, with or without a block.
+            YARVINSN_invokesuper
+            | YARVINSN_invokesuperforward
+            | YARVINSN_invokeblock
+            | YARVINSN_invokebuiltin
+            | YARVINSN_opt_invokebuiltin_delegate
+            | YARVINSN_opt_invokebuiltin_delegate_leave
+            // Block parameter access reads and writes the frame's block
+            // handler slot through the EP.
+            | YARVINSN_getblockparam
+            | YARVINSN_setblockparam
+            | YARVINSN_getblockparamproxy
+            // Outer-scope local access walks the EP chain from the frame,
+            // which a virtual frame does not have.
+            | YARVINSN_getlocal_WC_1
+            | YARVINSN_setlocal_WC_1
+            // Constant and class variable lookup resolve the cref through
+            // the executing frame (ep[-2]); a live virtual frame's ccalls
+            // would resolve against the physical frame's cref instead. The
+            // descriptor's cme could supply the cref in the future to
+            // re-enable inlining these.
+            | YARVINSN_getconstant
+            | YARVINSN_setconstant
+            | YARVINSN_opt_getconstant_path
+            | YARVINSN_getclassvariable
+            | YARVINSN_setclassvariable => {
+                return true;
+            }
+            // The generic local access opcodes carry the scope level as
+            // their second operand; level zero is the frame's own scope.
+            YARVINSN_getlocal | YARVINSN_setlocal => {
+                let level = unsafe { *pc.add(2) };
+                if level != VALUE(0) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+
+        insn_idx = insn_idx.saturating_add(unsafe { rb_insn_len(VALUE(opcode as usize)) }.try_into().unwrap());
+    }
+
+    false
+}
+
 /// True if the block ISEQ contains a `throw` opcode (break, non-local return). ZJIT can't
 /// compile `throw`, so inlining such a block's frame would side-exit + deopt on every call.
 /// These blocks fall back to `vm_yield`, which handles the non-local exit in C.
@@ -3287,7 +3387,10 @@ fn jit_frame_next_pc(state: &FrameState) -> *const VALUE {
     unsafe { state.pc.offset(insn_len(opcode) as isize) }
 }
 
-fn jit_frame_for_state(state: &FrameState, stack_map_size: usize) -> *const zjit_jit_frame {
+/// `sp_offset` must be the slot offset the paired cfp->sp save uses (the
+/// argument the adjacent gen_save_sp call receives), so materialization can
+/// recover the physical frame's stack base as cfp->sp - sp_offset.
+fn jit_frame_for_state(state: &FrameState, stack_map_size: usize, sp_offset: usize) -> *const zjit_jit_frame {
     let pc = jit_frame_next_pc(state);
 
     // Under virtual inline frames, a JITFrame created at an inlined depth
@@ -3297,7 +3400,7 @@ fn jit_frame_for_state(state: &FrameState, stack_map_size: usize) -> *const zjit
     if VIRTUAL_INLINE_FRAMES {
         if let Some(plan) = state.inline_chain() {
             let chain = build_inline_chain(plan, pc);
-            return JITFrame::new_iseq_with_chain(pc, state.iseq, stack_map_size, chain);
+            return JITFrame::new_iseq_with_chain(pc, state.iseq, stack_map_size, chain, sp_offset);
         }
     }
 
@@ -3326,10 +3429,10 @@ fn build_inline_chain(plan: &[InlineFramePlan], innermost_pc: *const VALUE) -> V
 /// Save only the PC to CFP. Use this when you need to call gen_save_sp()
 /// immediately after with a custom stack size (e.g., gen_ccall_with_frame
 /// adjusts SP to exclude receiver and arguments).
-fn gen_write_jit_frame(asm: &mut Assembler, state: &FrameState, stack_map_size: usize) -> *const zjit_jit_frame {
+fn gen_write_jit_frame(asm: &mut Assembler, state: &FrameState, stack_map_size: usize, sp_offset: usize) -> *const zjit_jit_frame {
     gen_incr_counter(asm, Counter::vm_write_jit_frame_count);
     asm_comment!(asm, "save JITFrame to CFP");
-    let jit_frame = jit_frame_for_state(state, stack_map_size);
+    let jit_frame = jit_frame_for_state(state, stack_map_size, sp_offset);
     asm.mov(Opnd::mem(64, NATIVE_BASE_PTR, jit_frame_slot_offset(jit_frame_depth(state))), Opnd::const_ptr(jit_frame));
 
     // CFP_PC for a live JIT frame routes through the JITFrame on the native
@@ -3351,7 +3454,7 @@ fn gen_write_jit_frame(asm: &mut Assembler, state: &FrameState, stack_map_size: 
 /// However, to avoid marking uninitialized stack slots, this also updates SP,
 /// which may have cfp->sp for a past frame or a past non-leaf call.
 fn gen_prepare_call_with_gc(asm: &mut Assembler, state: &FrameState, leaf: bool, stack_map_size: usize) -> *const zjit_jit_frame {
-    let jit_frame = gen_write_jit_frame(asm, state, stack_map_size);
+    let jit_frame = gen_write_jit_frame(asm, state, stack_map_size, virtual_sp_base(state) + state.stack_size());
     gen_save_sp(asm, virtual_sp_base(state) + state.stack_size());
     if leaf {
         asm.expect_leaf_ccall(virtual_sp_base(state) + state.stack_size());
@@ -3465,7 +3568,7 @@ fn gen_spill_stack(jit: &JITState, asm: &mut Assembler, function: &Function, sta
 /// writing stack slots. Otherwise spilling the stack can overwrite frame
 /// metadata below the real VM-stack base.
 fn gen_prepare_fallback_call(jit: &JITState, asm: &mut Assembler, function: &Function, state: &FrameState) {
-    gen_write_jit_frame(asm, state, 0);
+    gen_write_jit_frame(asm, state, 0, virtual_sp_base(state) + state.stack_size());
     gen_save_sp(asm, virtual_sp_base(state) + state.stack_size());
     gen_spill_locals(jit, asm, state);
     gen_spill_stack(jit, asm, function, state);
@@ -3617,6 +3720,21 @@ fn gen_stack_overflow_check(jit: &mut JITState, asm: &mut Assembler, function: &
     let cfp_growth = 2 * (RUBY_SIZEOF_CONTROL_FRAME / SIZEOF_VALUE);
     let peak_offset = (cfp_growth + stack_growth) * SIZEOF_VALUE;
     let stack_limit = asm.lea(Opnd::mem(64, SP, peak_offset as i32));
+
+    // Under virtual inline frames, also require room for every live virtual
+    // frame on this execution context to be synthesized as a physical
+    // control frame. Per-invocation reserves do not compose across
+    // JIT-to-JIT recursion: each native invocation consumes only its
+    // physical frame's slot while it runs, but a deopt cascade materializes
+    // every invocation's chain at once.
+    let stack_limit = if VIRTUAL_INLINE_FRAMES {
+        let debt = asm.load(Opnd::mem(64, EC, RUBY_OFFSET_EC_ZJIT_INLINE_FRAME_DEBT as i32));
+        asm.add(stack_limit, debt)
+    }
+    else {
+        stack_limit
+    };
+
     asm.cmp(CFP, stack_limit);
     asm.jbe(jit, side_exit(jit, function, state, StackOverflow));
 }
@@ -3684,6 +3802,32 @@ fn build_side_exit(jit: &JITState, function: &Function, state: &FrameState) -> S
         locals.push(jit.get_opnd(insn_id));
     }
 
+    // An exit from a virtual inline frame cannot write its pc and iseq into
+    // the physical control frame (they describe the innermost logical frame,
+    // not the physical one). Instead it publishes a JITFrame whose chain
+    // carries every logical frame's location, with the innermost entry's PC
+    // being this exit's PC, and whose stack map spans every logical frame's
+    // operand stack and receiver. The materializer synthesizes the control
+    // frames from that. Direct stack and locals writes still run, at
+    // chain-offset slots, because locals are not covered by the map.
+    if VIRTUAL_INLINE_FRAMES && state.depth > 0 {
+        let stack_map = build_stack_map(jit, function, state);
+        let plan = state.inline_chain().expect("an inlined frame always has a chain plan");
+        let chain = build_inline_chain(plan, state.pc);
+        let jit_frame = JITFrame::new_iseq_with_chain(state.pc, state.iseq, stack_map.len(), chain, virtual_sp_base(state) + state.stack().len());
+
+        return SideExit {
+            pc: Opnd::const_ptr(state.pc),
+            stack,
+            locals,
+            iseq: state.iseq,
+            stack_map: Some(StackMap::new(stack_map, jit_frame, 0)),
+            recompile: None,
+            sp_base: virtual_sp_base(state) as i32,
+            virtual_frame: true,
+        };
+    }
+
     SideExit{
         pc: Opnd::const_ptr(state.pc),
         stack,
@@ -3691,6 +3835,8 @@ fn build_side_exit(jit: &JITState, function: &Function, state: &FrameState) -> S
         iseq: state.iseq,
         stack_map: build_caller_stack_map(jit, function, state),
         recompile: None,
+        sp_base: 0,
+        virtual_frame: false,
     }
 }
 
@@ -3702,7 +3848,7 @@ fn build_caller_stack_map(jit: &JITState, function: &Function, state: &FrameStat
         return None;
     }
 
-    let jit_frame = jit_frame_for_state(&caller_state, stack_map.len());
+    let jit_frame = jit_frame_for_state(&caller_state, stack_map.len(), virtual_sp_base(&caller_state) + caller_state.stack().len());
     Some(StackMap::new(stack_map, jit_frame, jit_frame_depth(&caller_state)))
 }
 
@@ -3740,6 +3886,10 @@ c_callable! {
     /// frame: the control frame describes the exiting frame only because the exit
     /// wrote its ISEQ and PC there moments earlier, and an exit path that does not
     /// write them would silently gate the recompile on an unrelated instruction.
+    /// Exits from virtual inline frames are exactly such a path: they leave the
+    /// physical frame's ISEQ and PC describing an outer frame, and the exiting
+    /// frame's position lives in the chain descriptors until the materializer
+    /// runs, after this.
     pub(crate) fn exit_recompile(compiled_iseq_raw: VALUE, frame_iseq_raw: VALUE, insn_idx: u32) {
         // Fast check before taking the VM lock: skip if the compiled unit is already
         // invalidated or at the version limit. This avoids expensive lock acquisition
@@ -4098,6 +4248,30 @@ pub fn gen_materialize_exit_trampoline(cb: &mut CodeBlock, exit_trampoline: Code
     asm.compile(cb).map(|(code_ptr, gc_offsets)| {
         assert_eq!(gc_offsets.len(), 0);
         register_current_code_range_with_perf(cb, "materialize_exit trampoline", code_ptr);
+        code_ptr
+    })
+}
+
+/// Generate the materialize_exit trampoline variant for exits from virtual
+/// inline frames. Unlike gen_materialize_exit_trampoline it does not clear
+/// cfp->jit_return before materializing: the materializer reads the inline
+/// chain through it to synthesize the missing control frames, and clears the
+/// field itself once the frames are physical.
+pub fn gen_materialize_exit_no_clear_trampoline(cb: &mut CodeBlock, exit_trampoline: CodePtr) -> Result<CodePtr, CompileError> {
+    unsafe extern "C" {
+        fn rb_zjit_materialize_frames(ec: EcPtr, cfp: CfpPtr);
+    }
+
+    let mut asm = Assembler::new();
+    asm.new_block_without_id("materialize_exit_no_clear_trampoline");
+
+    asm_comment!(asm, "materialize ZJIT frames, synthesizing virtual inline frames");
+    asm_ccall!(asm, rb_zjit_materialize_frames, EC, CFP);
+    asm.jmp(Target::CodePtr(exit_trampoline));
+
+    asm.compile(cb).map(|(code_ptr, gc_offsets)| {
+        assert_eq!(gc_offsets.len(), 0);
+        register_current_code_range_with_perf(cb, "materialize_exit_no_clear trampoline", code_ptr);
         code_ptr
     })
 }

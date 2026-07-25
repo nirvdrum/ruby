@@ -118,6 +118,16 @@ typedef struct zjit_jit_frame {
     // first inlined callee. The innermost entry's pc/iseq duplicate the
     // JITFrame's pc/iseq fields.
     uint32_t inline_count;
+    // Distance in VALUE slots from the physical frame's initial stack
+    // pointer (the value ZJIT pins its SP register to) to the stack pointer
+    // the publishing site saves into cfp->sp. Every site that publishes this
+    // JITFrame writes cfp->sp in the same instruction sequence, so
+    // materialization can recover the base as cfp->sp - sp_offset. The base
+    // cannot be derived from cfp->ep because the environment can escape to
+    // the heap (Binding or block capture) while the frame is still live, at
+    // which point cfp->ep no longer points into the VM stack. Only
+    // meaningful when inline_count is non-zero.
+    uint32_t sp_offset;
     // Compile-time descriptor chain, or NULL. Owned by ZJIT and registered
     // as a GC root so iseq/cme members stay alive and are updated on
     // compaction.

@@ -56,6 +56,9 @@ enum jit_bindgen_constants {
     RUBY_OFFSET_EC_INTERRUPT_MASK = offsetof(rb_execution_context_t, interrupt_mask),
     RUBY_OFFSET_EC_THREAD_PTR = offsetof(rb_execution_context_t, thread_ptr),
     RUBY_OFFSET_EC_RACTOR_ID = offsetof(rb_execution_context_t, ractor_id),
+#if USE_ZJIT
+    RUBY_OFFSET_EC_ZJIT_INLINE_FRAME_DEBT = offsetof(rb_execution_context_t, zjit_inline_frame_debt),
+#endif
 };
 
 // Manually bound in rust since this is out-of-range of `int`,

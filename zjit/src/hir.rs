@@ -605,6 +605,7 @@ pub enum SideExitReason {
     InvokeBlockHandlerNotIseq,
     InvokeBlockIseqChanged,
     BlockParamWbRequired,
+    VirtualFrameDynamicSend,
     StackOverflow,
     FixnumModByZero,
     FixnumDivByZero,
@@ -5156,6 +5157,17 @@ impl Function {
             return false;
         }
 
+        // Virtual inline frames cannot host block-involving operations:
+        // block handlers capture their home frame's self and EP at runtime,
+        // yield reads the handler through the LEP, and builtin invocations
+        // may read locals through the EP, none of which a virtual frame has.
+        // Rather than inlining such callees and deopting at every call, keep
+        // them as direct sends with real frames.
+        if crate::codegen::VIRTUAL_INLINE_FRAMES && crate::codegen::iseq_has_block_dependent_insns(callee_iseq) {
+            incr_counter!(inline_reject_block_dependent);
+            return false;
+        }
+
         true
     }
 
@@ -6392,6 +6404,43 @@ impl Function {
         }
     }
 
+    /// Under virtual inline frames, a dynamic send cannot run inside an inlined
+    /// callee: the runtime consults the caller's control frame during dispatch
+    /// (most notably reading cfp->self for the protected-method visibility
+    /// check), and with the chain virtual, the physical frame it finds belongs
+    /// to the outermost caller rather than the logical one. Exit to the
+    /// interpreter instead: materialization synthesizes the chain and the send
+    /// re-executes from the correct frame. This runs once after the fixed-point
+    /// optimization loop, so it only rewrites sends that specialization could
+    /// not convert to direct calls.
+    fn exit_virtual_frame_dynamic_sends(&mut self) {
+        for block in self.reverse_post_order() {
+            let old_insns = std::mem::take(&mut self.blocks[block.0].insns);
+            let mut new_insns = vec![];
+            for insn_id in old_insns {
+                let replacement_id = match self.find(insn_id) {
+                    Insn::Send { state, .. }
+                    | Insn::SendForward { state, .. }
+                    | Insn::InvokeSuper { state, .. }
+                    | Insn::InvokeSuperForward { state, .. }
+                    | Insn::InvokeBlock { state, .. }
+                        if self.frame_state(state).depth > 0 =>
+                    {
+                        self.new_insn(Insn::SideExit { state, reason: Box::new(SideExitReason::VirtualFrameDynamicSend), recompile: None })
+                    }
+                    _ => insn_id,
+                };
+                new_insns.push(replacement_id);
+                // Replacing a send with a side exit truncates the rest of the
+                // block; clean_cfg removes any blocks that become unreachable.
+                if self.insns[replacement_id.0].is_terminator() {
+                    break;
+                }
+            }
+            self.blocks[block.0].insns = new_insns;
+        }
+    }
+
     /// Remove instructions that do not have side effects and are not referenced by any other
     /// instruction.
     fn eliminate_dead_code(&mut self) {
@@ -6739,6 +6788,7 @@ impl Function {
             (remove_redundant_patch_points) => { Counter::compile_hir_remove_redundant_patch_points_time_ns };
             (remove_duplicate_check_interrupts) => { Counter::compile_hir_remove_duplicate_check_interrupts_time_ns };
             (eliminate_dead_code) => { Counter::compile_hir_eliminate_dead_code_time_ns };
+            (exit_virtual_frame_dynamic_sends) => { Counter::compile_hir_strength_reduce_time_ns };
             ($name:ident) => { unimplemented!("Counter for pass {}", stringify!($name)) };
         }
 
@@ -6793,6 +6843,15 @@ impl Function {
             if !did_inline {
                 break;
             }
+        }
+
+        // Dynamic sends left at inlined depths after the loop cannot run from a
+        // virtual frame; rewrite them into side exits. Runs outside the loop
+        // because later specialization iterations may still convert them.
+        if crate::codegen::VIRTUAL_INLINE_FRAMES {
+            run_pass!(exit_virtual_frame_dynamic_sends);
+            run_pass!(clean_cfg);
+            run_pass!(eliminate_dead_code);
         }
 
         if should_dump {

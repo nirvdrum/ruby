@@ -609,6 +609,17 @@ pub struct SideExit {
     /// If set, the side exit will profile the current instruction and invalidate
     /// the compiled ISEQ for recompilation.
     pub recompile: Option<SideExitRecompile>,
+    /// The exiting frame's VM stack offset from the physical frame's SP, in
+    /// slots. Non-zero only for exits from virtual inline frames, whose
+    /// direct stack and locals writes land at chain-offset slots because the
+    /// SP register stays pinned to the physical frame.
+    pub sp_base: i32,
+    /// True when this exit leaves a virtual inline frame. The exit then
+    /// skips the physical frame's cfp->pc and cfp->iseq writes (the chain
+    /// descriptors carry every logical frame's location), preserves
+    /// cfp->jit_return so the chain survives into the materializer, and
+    /// routes through the trampoline variant that does not clear it.
+    pub virtual_frame: bool,
 }
 
 /// Metadata for the recompile callback on side exit.
@@ -2866,35 +2877,43 @@ impl Assembler
 
         /// Restore VM state (cfp->pc, cfp->sp, stack, locals) for the side exit.
         fn compile_exit_save_state(asm: &mut Assembler, exit: &SideExit) {
-            let SideExit { pc, stack, locals, iseq, stack_map, .. } = exit;
+            let SideExit { pc, stack, locals, iseq, stack_map, sp_base, virtual_frame, .. } = exit;
 
             // Side exit blocks are not part of the CFG at the moment,
             // so we need to manually ensure that patchpoints get padded
             // so that nobody stomps on us
             asm.boundary_pad();
 
-            asm_comment!(asm, "save cfp->pc");
-            asm.store(Opnd::mem(64, CFP, RUBY_OFFSET_CFP_PC), *pc);
+            // Exits from virtual inline frames leave the physical frame's pc
+            // and iseq alone: the chain descriptors installed with the stack
+            // map below carry every logical frame's location, and the
+            // materializer writes the fields when it synthesizes the frames.
+            if !virtual_frame {
+                asm_comment!(asm, "save cfp->pc");
+                asm.store(Opnd::mem(64, CFP, RUBY_OFFSET_CFP_PC), *pc);
+            }
 
             asm_comment!(asm, "save cfp->sp");
-            asm.lea_into(Opnd::mem(64, CFP, RUBY_OFFSET_CFP_SP), Opnd::mem(64, SP, stack.len() as i32 * SIZEOF_VALUE_I32));
+            asm.lea_into(Opnd::mem(64, CFP, RUBY_OFFSET_CFP_SP), Opnd::mem(64, SP, (sp_base + stack.len() as i32) * SIZEOF_VALUE_I32));
 
-            asm_comment!(asm, "save cfp->iseq");
-            asm.store(Opnd::mem(64, CFP, RUBY_OFFSET_CFP_ISEQ), VALUE::from(*iseq).into());
+            if !virtual_frame {
+                asm_comment!(asm, "save cfp->iseq");
+                asm.store(Opnd::mem(64, CFP, RUBY_OFFSET_CFP_ISEQ), VALUE::from(*iseq).into());
+            }
 
             // cfp->block_code and cfp->jit_return are cleared by the materialize_exit trampoline
 
             if !stack.is_empty() {
                 asm_comment!(asm, "write stack slots: {}", join_opnds(&stack, ", "));
                 for (idx, &opnd) in stack.iter().enumerate() {
-                    asm.store(Opnd::mem(64, SP, idx as i32 * SIZEOF_VALUE_I32), opnd);
+                    asm.store(Opnd::mem(64, SP, (sp_base + idx as i32) * SIZEOF_VALUE_I32), opnd);
                 }
             }
 
             if !locals.is_empty() {
                 asm_comment!(asm, "write locals: {}", join_opnds(&locals, ", "));
                 for (idx, &opnd) in locals.iter().enumerate() {
-                    asm.store(Opnd::mem(64, SP, (-local_size_and_idx_to_ep_offset(locals.len(), idx) - 1) * SIZEOF_VALUE_I32), opnd);
+                    asm.store(Opnd::mem(64, SP, (sp_base - local_size_and_idx_to_ep_offset(locals.len(), idx) - 1) * SIZEOF_VALUE_I32), opnd);
                 }
             }
 
@@ -2904,9 +2923,18 @@ impl Assembler
         }
 
         /// Tear down the JIT frame and return to the interpreter.
-        fn compile_exit_return(asm: &mut Assembler) {
+        fn compile_exit_return(asm: &mut Assembler, exit: &SideExit) {
             asm_comment!(asm, "exit to the interpreter");
-            asm.jmp(Target::CodePtr(ZJITState::get_materialize_exit_trampoline()));
+            // Exits from virtual inline frames must preserve cfp->jit_return:
+            // the materializer reads the chain through it to synthesize the
+            // missing control frames, and clears it afterwards itself.
+            let trampoline = if exit.virtual_frame {
+                ZJITState::get_materialize_exit_no_clear_trampoline()
+            }
+            else {
+                ZJITState::get_materialize_exit_trampoline()
+            };
+            asm.jmp(Target::CodePtr(trampoline));
         }
 
         fn compile_exit_recompile(asm: &mut Assembler, exit: &SideExit) {
@@ -2934,10 +2962,13 @@ impl Assembler
             // ccall doesn't clobber caller-saved registers
             // holding stack/local operands.
             compile_exit_save_state(asm, exit);
-            if trace_reason.is_some() || exit.recompile.is_some() {
+            if (trace_reason.is_some() || exit.recompile.is_some()) && !exit.virtual_frame {
                 // Clear cfp->jit_return to prepare for a C call. Normally, cfp->jit_return
                 // is cleared by the materialize_exit trampoline, but if we're about to
                 // make a C call, we need to clear any stale JITFrame.
+                //
+                // Virtual-frame exits keep it set: the freshly installed exit
+                // JITFrame is not stale, and the materializer needs its chain.
                 asm_comment!(asm, "clear cfp->jit_return");
                 asm.store(Opnd::mem(64, CFP, RUBY_OFFSET_CFP_JIT_RETURN), 0.into());
             }
@@ -2949,7 +2980,7 @@ impl Assembler
                 asm_ccall!(asm, rb_zjit_record_exit_stack, Opnd::const_ptr(reason_ptr));
             }
             compile_exit_recompile(asm, exit);
-            compile_exit_return(asm);
+            compile_exit_return(asm, exit);
         }
 
         fn join_opnds(opnds: &Vec<Opnd>, delimiter: &str) -> String {

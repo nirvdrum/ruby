@@ -1119,6 +1119,17 @@ struct rb_execution_context_struct {
         VALUE fields_obj;
     } gen_fields_cache;
 
+#if USE_ZJIT
+    /* The number of bytes of control frame space that materializing all
+     * live ZJIT virtual inline frames on this execution context would
+     * consume. Inline frame pushes in JIT code increment it, pops
+     * decrement it, and materialization settles it when frames are
+     * synthesized. JIT stack overflow checks add it to their requirement
+     * so the space stays reservable across arbitrarily deep JIT-to-JIT
+     * recursion, where per-invocation reserves alone do not compose. */
+    size_t zjit_inline_frame_debt;
+#endif
+
     /* for GC */
     struct {
         VALUE *stack_start;
