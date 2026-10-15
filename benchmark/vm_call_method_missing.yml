@@ -26,6 +26,27 @@ prelude: |
   s = S.new
   b = B.new
   sb = SB.new
+
+  class DispatchChainMissingTarget
+    def inc(x) = x + 1
+  end
+  class DispatchChainFixedProxy
+    def initialize(target); @target = target; end
+    def method_missing(name, x); @target.__send__(name, x); end
+  end
+  class DispatchChainRestProxy
+    def initialize(target); @target = target; end
+    def method_missing(name, *args); @target.__send__(name, *args); end
+  end
+  def dispatch_chain_proxy_fixed(proxy, x) = proxy.inc(x)
+  def dispatch_chain_proxy_rest(proxy, x) = proxy.inc(x)
+  dispatch_target = DispatchChainMissingTarget.new
+  dispatch_fixed = DispatchChainFixedProxy.new(dispatch_target)
+  dispatch_rest = DispatchChainRestProxy.new(dispatch_target)
+  100.times do
+    dispatch_chain_proxy_fixed(dispatch_fixed, 10)
+    dispatch_chain_proxy_rest(dispatch_rest, 10)
+  end
 benchmark:
   method_missing_simple_0: |
     a0.()
@@ -59,4 +80,12 @@ benchmark:
     sb.(*t10, **kw)
   method_missing_200_splat_kw: |
     sb.(*t200, **kw)
+  dispatch_chain_proxy_fixed: |
+    sum = 0
+    90.times { sum += dispatch_chain_proxy_fixed(dispatch_fixed, 10) }
+    raise sum.inspect unless sum == 990
+  dispatch_chain_proxy_rest: |
+    sum = 0
+    90.times { sum += dispatch_chain_proxy_rest(dispatch_rest, 10) }
+    raise sum.inspect unless sum == 990
 loop_count: 1000000

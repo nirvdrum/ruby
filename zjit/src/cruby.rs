@@ -1223,6 +1223,7 @@ mod manual_defs {
     pub const VM_CALL_ARGS_BLOCKARG: u32 = 1 << VM_CALL_ARGS_BLOCKARG_bit;
     pub const VM_CALL_FORWARDING: u32 = 1 << VM_CALL_FORWARDING_bit;
     pub const VM_CALL_FCALL: u32 = 1 << VM_CALL_FCALL_bit;
+    pub const VM_CALL_VCALL: u32 = 1 << VM_CALL_VCALL_bit;
     pub const VM_CALL_KWARG: u32 = 1 << VM_CALL_KWARG_bit;
     pub const VM_CALL_KW_SPLAT: u32 = 1 << VM_CALL_KW_SPLAT_bit;
     pub const VM_CALL_KW_SPLAT_MUT: u32 = 1 << VM_CALL_KW_SPLAT_MUT_bit;
@@ -1724,6 +1725,7 @@ pub(crate) mod ids {
     def_ids! {
         name: NULL               content: b""
         name: respond_to_missing content: b"respond_to_missing?"
+        name: method_missing     content: b"method_missing"
         name: eq                 content: b"=="
         name: string_eq          content: b"String#=="
         name: include_p          content: b"include?"

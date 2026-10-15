@@ -670,6 +670,10 @@ fn gen_insn(cb: &mut CodeBlock, jit: &mut JITState, asm: &mut Assembler, functio
         }
         Insn::ArrayPop { array, state } => gen_array_pop(asm, opnd!(array), &function.frame_state(*state)),
         Insn::ArrayLength { array } => gen_array_length(asm, opnd!(array)),
+        Insn::SendNameId { name } => gen_send_name_id(jit, asm, opnd!(name), function.type_of(*name)),
+        &Insn::SetMethodMissingReason { reason } => no_output!({
+            asm_ccall!(asm, rb_zjit_set_method_missing_reason, EC, reason.into());
+        }),
         Insn::ObjectAlloc { val, state } => gen_object_alloc(jit, asm, function, opnd!(val), &function.frame_state(*state)),
         &Insn::ObjectAllocClass { class, state } => gen_object_alloc_class(jit, asm, function, class, &function.frame_state(state)),
         Insn::StringCopy { val, chilled, state } => gen_string_copy(jit, asm, function, *val, opnd!(val), *chilled, &function.frame_state(*state)),
@@ -691,7 +695,7 @@ fn gen_insn(cb: &mut CodeBlock, jit: &mut JITState, asm: &mut Assembler, functio
         &Insn::Send { block: Some(BlockHandler::BlockArgProc(_)), .. } => unreachable!("BlockArgProc only appears in SendDirect"),
         &Insn::SendForward { cd, blockiseq, state, reason, .. } => gen_send_forward(jit, asm, function, cd, blockiseq, &function.frame_state(state), reason),
         Insn::SendDirect(insn) => {
-            let SendDirectData { cd, cme, iseq, recv, args, kw_bits, jit_entry_idx, block, state, .. } = &**insn;
+            let SendDirectData { cd, cme, iseq, recv, args, kw_bits, jit_entry_idx, block, state, exit_state, .. } = &**insn;
             let block = block.map(|bh| match bh {
                 BlockHandler::BlockIseq(blockiseq) => lir::BlockHandler::Iseq(blockiseq),
                 BlockHandler::BlockArgProc(proc_id) => {
@@ -707,11 +711,11 @@ fn gen_insn(cb: &mut CodeBlock, jit: &mut JITState, asm: &mut Assembler, functio
             gen_send_iseq_direct(
                 cb, jit, asm,
                 function, *cd, *cme, *iseq, opnd!(recv), opnds!(args),
-                *kw_bits, *jit_entry_idx, &function.frame_state(*state), block,
+                *kw_bits, *jit_entry_idx, &function.frame_state(*state), &function.frame_state(*exit_state), block,
             )
         }
-        Insn::PushInlineFrame { cme, iseq, recv, num_args, blockiseq, state, .. } => {
-            no_output!(gen_push_inline_frame(jit, asm, function, *cme, *iseq, opnd!(recv), *num_args, &function.frame_state(*state), *blockiseq))
+        Insn::PushInlineFrame { cme, iseq, recv, num_args, blockiseq, state, exit_state } => {
+            no_output!(gen_push_inline_frame(jit, asm, function, *cme, *iseq, opnd!(recv), *num_args, &function.frame_state(*state), &function.frame_state(*exit_state), *blockiseq))
         },
         Insn::PopInlineFrame { iseq, argc, state } => {
             no_output!(gen_pop_inline_frame(asm, *iseq, *argc, &function.frame_state(*state)))
@@ -846,6 +850,45 @@ fn gen_insn(cb: &mut CodeBlock, jit: &mut JITState, asm: &mut Assembler, functio
     jit.opnds[insn_id] = Some(out_opnd);
 
     Ok(())
+}
+
+fn gen_send_name_id(jit: &mut JITState, asm: &mut Assembler, name: Opnd, name_type: Type) -> Opnd {
+    if name_type.is_subtype(types::StaticSymbol) {
+        return asm.urshift(name, Opnd::UImm(RUBY_SPECIAL_SHIFT as u64));
+    }
+    if !name_type.could_be(types::StaticSymbol) {
+        return asm_ccall!(asm, rb_get_symbol_id, name);
+    }
+
+    // Avoid a C call even when an untyped Symbol misses every dispatch arm.
+    let hir_block_id = asm.current_block().hir_block_id;
+    let rpo_idx = asm.current_block().rpo_index;
+    let slow_block = asm.new_block(hir_block_id, false, rpo_idx);
+    let result_block = asm.new_block(hir_block_id, false, rpo_idx);
+    let slow_edge = Target::Block(Box::new(lir::BranchEdge { target: slow_block, args: vec![] }));
+    let result_edge = |value| Target::Block(Box::new(lir::BranchEdge {
+        target: result_block,
+        args: vec![value],
+    }));
+
+    let name = asm.load_imm(name);
+    asm.cmp(name.with_num_bits(8), Opnd::UImm(RUBY_SYMBOL_FLAG as u64));
+    asm.jne(jit, slow_edge);
+    let id = asm.urshift(name, Opnd::UImm(RUBY_SPECIAL_SHIFT as u64));
+    asm.jmp(result_edge(id));
+
+    asm.set_current_block(slow_block);
+    let label = jit.get_label(asm, slow_block, hir_block_id);
+    asm.write_label(label);
+    let id = asm_ccall!(asm, rb_get_symbol_id, name);
+    asm.jmp(result_edge(id));
+
+    asm.set_current_block(result_block);
+    let label = jit.get_label(asm, result_block, hir_block_id);
+    asm.write_label(label);
+    let result = asm.new_block_param(VALUE_BITS);
+    asm.current_block().add_parameter(result);
+    result
 }
 
 // Get EP at `level` from CFP
@@ -1692,11 +1735,12 @@ fn gen_push_inline_frame(
     recv: Opnd,
     num_args: u16,
     state: &FrameState,
+    exit_state: &FrameState,
     blockiseq: Option<IseqPtr>,
 ) {
     let local_size = unsafe { get_iseq_body_local_table_size(iseq) }.to_usize();
     let stack_growth = state.stack_size() + local_size + unsafe { get_iseq_body_stack_max(iseq) }.to_usize();
-    gen_stack_overflow_check(jit, asm, function, state, stack_growth);
+    gen_stack_overflow_check(jit, asm, function, exit_state, stack_growth);
 
     // Save cfp->pc and cfp->sp for the caller frame.
     // Cannot use gen_prepare_non_leaf_call because we need special SP math.
@@ -1830,6 +1874,7 @@ fn gen_send_iseq_direct(
     kw_bits: u32,
     jit_entry_idx: u16,
     state: &FrameState,
+    exit_state: &FrameState,
     block: Option<lir::BlockHandler>,
 ) -> lir::Opnd {
     gen_incr_counter(asm, Counter::iseq_optimized_send_count);
@@ -1843,7 +1888,7 @@ fn gen_send_iseq_direct(
     let forwarded_ci = Opnd::Value(unsafe { (*cd).ci }.into());
     let local_size = unsafe { get_iseq_body_local_table_size(iseq) }.to_usize() + forwarded_argc;
     let stack_growth = state.stack_size() + local_size + unsafe { get_iseq_body_stack_max(iseq) }.to_usize();
-    gen_stack_overflow_check(jit, asm, function, state, stack_growth);
+    gen_stack_overflow_check(jit, asm, function, exit_state, stack_growth);
 
     // Save cfp->pc and cfp->sp for the caller frame
     // Can't use gen_prepare_non_leaf_call because we need special SP math.

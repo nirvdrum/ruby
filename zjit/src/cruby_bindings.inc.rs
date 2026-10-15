@@ -499,6 +499,15 @@ pub const BOP_YIELD: ruby_basic_operators = 35;
 pub const BOP_LAST_: ruby_basic_operators = 36;
 pub type ruby_basic_operators = u32;
 pub type rb_serial_t = ::std::os::raw::c_ulonglong;
+pub const MISSING_NOENTRY: method_missing_reason = 0;
+pub const MISSING_PRIVATE: method_missing_reason = 1;
+pub const MISSING_PROTECTED: method_missing_reason = 2;
+pub const MISSING_FCALL: method_missing_reason = 4;
+pub const MISSING_VCALL: method_missing_reason = 8;
+pub const MISSING_SUPER: method_missing_reason = 16;
+pub const MISSING_MISSING: method_missing_reason = 32;
+pub const MISSING_NONE: method_missing_reason = 64;
+pub type method_missing_reason = u32;
 pub const METHOD_VISI_UNDEF: rb_method_visibility_t = 0;
 pub const METHOD_VISI_PUBLIC: rb_method_visibility_t = 1;
 pub const METHOD_VISI_PRIVATE: rb_method_visibility_t = 2;
@@ -2350,6 +2359,11 @@ unsafe extern "C" {
         klass: VALUE,
         id: ID,
     ) -> *const rb_callable_method_entry_t;
+    pub fn rb_callable_method_entry_without_refinements(
+        klass: VALUE,
+        id: ID,
+        defined_class: *mut VALUE,
+    ) -> *const rb_callable_method_entry_t;
     pub static mut rb_cISeq: VALUE;
     pub static mut rb_cRubyVM: VALUE;
     pub static mut rb_mRubyVMFrozenCore: VALUE;
@@ -2489,6 +2503,12 @@ unsafe extern "C" {
         recv: VALUE,
     ) -> *const rb_callable_method_entry_struct;
     pub fn rb_zjit_class_get_alloc_func(klass: VALUE) -> rb_alloc_func_t;
+    pub fn rb_get_symbol_id(name: VALUE) -> ID;
+    pub fn rb_zjit_set_method_missing_reason(
+        ec: *mut rb_execution_context_t,
+        reason: ::std::os::raw::c_uint,
+    );
+    pub fn rb_zjit_cme_mark_cached(cme: *const rb_callable_method_entry_t);
     pub fn rb_zjit_class_has_struct_allocator(klass: VALUE) -> bool;
     pub fn rb_zjit_struct_num_members(klass: VALUE) -> rb_len_t;
     pub fn rb_zjit_struct_member_id(klass: VALUE, index: rb_len_t) -> ID;

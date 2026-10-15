@@ -21,6 +21,45 @@ prelude: |
   sb_t10 = [:sb, *t10]
   sb_t200 = [:sb, *t200]
   kw = {kw: 2}
+
+  class DispatchChainTarget
+    def inc(x) = x + 1
+    def dec(x) = x - 1
+    def m0(x) = x + 0
+    def m1(x) = x + 1
+    def m2(x) = x + 2
+    def m3(x) = x + 3
+    def m4(x) = x + 4
+    def m5(x) = x + 5
+    def m6(x) = x + 6
+    def m7(x) = x + 7
+    def m8(x) = x + 8
+  end
+  def dispatch_chain_symbol_mono(o, name, x) = o.__send__(name, x)
+  def dispatch_chain_symbol_poly(o, name, x) = o.__send__(name, x)
+  def dispatch_chain_string_poly(o, name, x) = o.__send__(name, x)
+  def dispatch_chain_public_poly(o, name, x) = o.public_send(name, x)
+  def dispatch_chain_direct_mono(o, name, x) = o.inc(x)
+  def dispatch_chain_direct_poly(o, name, x)
+    name == :inc ? o.inc(x) : o.dec(x)
+  end
+  def dispatch_chain_megamorphic(o, name, x) = o.__send__(name, x)
+  def dispatch_chain_late_name(o, name, x) = o.__send__(name, x)
+  dispatch_target = DispatchChainTarget.new
+  dispatch_symbols = [:inc, :dec]
+  dispatch_strings = [String.new('inc'), String.new('dec'), String.new('inc'), String.new('dec')]
+  dispatch_many = [:m0, :m1, :m2, :m3, :m4, :m5, :m6, :m7, :m8]
+  100.times do |i|
+    name = dispatch_symbols[i % 2]
+    dispatch_chain_symbol_mono(dispatch_target, :inc, 10)
+    dispatch_chain_symbol_poly(dispatch_target, name, 10)
+    dispatch_chain_string_poly(dispatch_target, dispatch_strings[i % 4], 10)
+    dispatch_chain_public_poly(dispatch_target, name, 10)
+    dispatch_chain_direct_mono(dispatch_target, :inc, 10)
+    dispatch_chain_direct_poly(dispatch_target, name, 10)
+    dispatch_chain_megamorphic(dispatch_target, dispatch_many[i % 9], 10)
+    dispatch_chain_late_name(dispatch_target, :inc, 10)
+  end
 benchmark:
   send_simple_0: |
     send(:a0)
@@ -74,4 +113,36 @@ benchmark:
     send(*sb_t10, **kw)
   send_200_splat_comb_kw: |
     send(*sb_t200, **kw)
+  dispatch_chain_symbol_mono: |
+    sum = 0
+    90.times { sum += dispatch_chain_symbol_mono(dispatch_target, :inc, 10) }
+    raise sum.inspect unless sum == 990
+  dispatch_chain_symbol_poly: |
+    sum = 0
+    90.times { |i| sum += dispatch_chain_symbol_poly(dispatch_target, dispatch_symbols[i % 2], 10) }
+    raise sum.inspect unless sum == 900
+  dispatch_chain_string_poly: |
+    sum = 0
+    90.times { |i| sum += dispatch_chain_string_poly(dispatch_target, dispatch_strings[i % 4], 10) }
+    raise sum.inspect unless sum == 900
+  dispatch_chain_public_poly: |
+    sum = 0
+    90.times { |i| sum += dispatch_chain_public_poly(dispatch_target, dispatch_symbols[i % 2], 10) }
+    raise sum.inspect unless sum == 900
+  dispatch_chain_direct_mono: |
+    sum = 0
+    90.times { sum += dispatch_chain_direct_mono(dispatch_target, :inc, 10) }
+    raise sum.inspect unless sum == 990
+  dispatch_chain_direct_poly: |
+    sum = 0
+    90.times { |i| sum += dispatch_chain_direct_poly(dispatch_target, dispatch_symbols[i % 2], 10) }
+    raise sum.inspect unless sum == 900
+  dispatch_chain_megamorphic: |
+    sum = 0
+    90.times { |i| sum += dispatch_chain_megamorphic(dispatch_target, dispatch_many[i % 9], 10) }
+    raise sum.inspect unless sum == 1260
+  dispatch_chain_late_name: |
+    sum = 0
+    90.times { sum += dispatch_chain_late_name(dispatch_target, :dec, 10) }
+    raise sum.inspect unless sum == 810
 loop_count: 3000000

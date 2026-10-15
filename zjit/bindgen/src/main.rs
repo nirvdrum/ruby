@@ -282,6 +282,10 @@ fn main() {
         .allowlist_type("rb_num_t")
         .allowlist_function("rb_callable_method_entry")
         .allowlist_function("rb_callable_method_entry_or_negative")
+        .allowlist_function("rb_callable_method_entry_without_refinements")
+        .allowlist_type("method_missing_reason")
+        .allowlist_function("rb_zjit_set_method_missing_reason")
+        .allowlist_function("rb_zjit_cme_mark_cached")
         .allowlist_function("rb_vm_frame_method_entry")
         .allowlist_function("rb_vm_once_done_value")
         .allowlist_type("IVC") // pointer to iseq_inline_iv_cache_entry

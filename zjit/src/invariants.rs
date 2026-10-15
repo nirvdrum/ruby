@@ -298,6 +298,9 @@ pub fn track_cme_assumption(
     side_exit_ptr: CodePtr,
     version: IseqVersionRef,
 ) {
+    // Refinement-free and alias targets need not have a VM call cache. Mark
+    // every tracked CME so rb_free_method_entry notifies rb_zjit_cme_free.
+    unsafe { crate::cruby::rb_zjit_cme_mark_cached(cme) };
     let invariants = ZJITState::get_invariants();
     invariants.cme_patch_points.entry(cme).or_default().insert(PatchPoint::new(
         patch_point_ptr,

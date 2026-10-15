@@ -28,6 +28,12 @@ pub struct Annotations {
     builtin_funcs: HashMap<*mut c_void, FnProperties>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReflectiveSendKind {
+    AnyVisibility,
+    PublicOnly,
+}
+
 /// Runtime behaviors of C functions that implement a Ruby method
 #[derive(Clone, Copy)]
 pub struct FnProperties {
@@ -40,6 +46,7 @@ pub struct FnProperties {
     /// Whether it's legal to remove the call if the result is unused
     pub elidable: bool,
     pub inline: fn(&mut hir::Function, hir::BlockId, hir::InsnId, &[hir::InsnId], hir::InsnId) -> Option<hir::InsnId>,
+    pub reflective_send: Option<ReflectiveSendKind>,
 }
 
 /// A safe default for un-annotated Ruby methods: we can't optimize them or their returned values.
@@ -51,11 +58,30 @@ impl Default for FnProperties {
             return_type: types::BasicObject,
             elidable: false,
             inline: no_inline,
+            reflective_send: None,
         }
     }
 }
 
 impl Annotations {
+    /// Classify intrinsic implementations, including aliases, never method names.
+    pub fn reflective_send_kind(&self, mut cme: *const rb_callable_method_entry_t) -> Option<ReflectiveSendKind> {
+        if cme.is_null() {
+            return None;
+        }
+        unsafe {
+            while get_cme_def_type(cme) == VM_METHOD_TYPE_ALIAS {
+                cme = rb_aliased_callable_method_entry(cme);
+            }
+            match get_cme_def_type(cme) {
+                VM_METHOD_TYPE_OPTIMIZED if get_cme_def_body_optimized_type(cme) == OPTIMIZED_METHOD_TYPE_SEND =>
+                    Some(ReflectiveSendKind::AnyVisibility),
+                VM_METHOD_TYPE_CFUNC => self.get_cfunc_properties(cme)?.reflective_send,
+                _ => None,
+            }
+        }
+    }
+
     /// Query about properties of a C method
     pub fn get_cfunc_properties(&self, method: *const rb_callable_method_entry_t) -> Option<FnProperties> {
         let fn_ptr = unsafe {
@@ -166,6 +192,10 @@ fn annotate_builtin_method(props_map: &mut HashMap<*mut c_void, FnProperties>, c
 pub fn init() -> Annotations {
     let cfuncs = &mut HashMap::new();
     let builtin_funcs = &mut HashMap::new();
+    annotate_c_method(cfuncs, unsafe { rb_mKernel }, "public_send", FnProperties {
+        reflective_send: Some(ReflectiveSendKind::PublicOnly),
+        ..FnProperties::default()
+    });
 
     macro_rules! annotate {
         ($module:ident, $method_name:literal, $inline:ident) => {

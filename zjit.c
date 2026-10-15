@@ -361,6 +361,19 @@ const struct rb_callable_method_entry_struct *
 rb_zjit_vm_search_method(VALUE cd_owner, struct rb_call_data *cd, VALUE recv);
 
 rb_alloc_func_t rb_zjit_class_get_alloc_func(VALUE klass);
+ID rb_get_symbol_id(VALUE name);
+
+void
+rb_zjit_set_method_missing_reason(rb_execution_context_t *ec, unsigned int reason)
+{
+    ec->method_missing_reason = reason;
+}
+
+void
+rb_zjit_cme_mark_cached(const rb_callable_method_entry_t *cme)
+{
+    METHOD_ENTRY_CACHED_SET((rb_callable_method_entry_t *)cme);
+}
 
 // Defined in struct.c, where struct_alloc and the members ivar are visible.
 bool rb_zjit_class_has_struct_allocator(VALUE klass);

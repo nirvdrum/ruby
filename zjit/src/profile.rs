@@ -108,11 +108,50 @@ fn profile_insn_sample(
     true
 }
 
+/// Lookup may allocate, so no profile reference or receiver VALUE survives it.
+fn sample_dispatch(ec: EcPtr) -> Option<DispatchKey> {
+    {
+        let profiler = Profiler::new(ec);
+        let cd: *const rb_call_data = profiler.insn_opnd(0).as_ptr();
+        let ci = unsafe { (*cd).ci };
+        let flags = unsafe { rb_vm_ci_flag(ci) };
+        if flags & (VM_CALL_FORWARDING | VM_CALL_TAILCALL) != 0 {
+            return None;
+        }
+        let kwarg = unsafe { rb_vm_ci_kwarg(ci) };
+        let keyword_count = if kwarg.is_null() { 0 } else { (unsafe { get_cikw_keyword_len(kwarg) }) as usize };
+        let trailing = keyword_count + usize::from(flags & VM_CALL_KW_SPLAT != 0)
+            + usize::from(flags & VM_CALL_ARGS_SPLAT != 0);
+        if unsafe { vm_ci_argc(ci) } as usize <= trailing {
+            return None;
+        }
+        let recv = profiler.peek_at_stack(num_arguments_on_stack(cd) as isize);
+        let mid = unsafe { vm_ci_mid(ci) };
+        let cme = unsafe { rb_callable_method_entry(recv.class_of(), mid) };
+        crate::state::ZJITState::get_method_annotations().reflective_send_kind(cme)?;
+    }
+    // Re-read the frame after lookup/alias resolution, which can trigger compaction.
+    let profiler = Profiler::new(ec);
+    let cd: *const rb_call_data = profiler.insn_opnd(0).as_ptr();
+    let argc = num_arguments_on_stack(cd);
+    let recv = profiler.peek_at_stack(argc as isize);
+    let name = profiler.peek_at_stack((argc - 1) as isize);
+    Some(DispatchKey { receiver: ProfiledType::new(recv), name: unsafe { rb_get_symbol_id(name) } })
+}
+
 /// Profile a YARV instruction
 fn profile_insn(bare_opcode: ruby_vminsn_type, ec: EcPtr) {
+    let dispatch = match bare_opcode {
+        YARVINSN_opt_send_without_block | YARVINSN_send => sample_dispatch(ec),
+        _ => None,
+    };
     let profiler = &mut Profiler::new(ec);
     let profile = &mut get_or_create_iseq_payload(profiler.iseq).profile;
     let _ = profile_insn_sample(bare_opcode, profiler, profile);
+    if let Some(key) = dispatch {
+        VALUE::from(profiler.iseq).write_barrier(key.receiver.class());
+        profile.dispatches.entry(profiler.insn_idx).or_insert_with(DispatchDistribution::new).observe(key);
+    }
 
     // Once we profile the instruction enough times, we stop profiling it.
     let entry = profile.entry_mut(profiler.insn_idx);
@@ -147,6 +186,21 @@ pub const DISTRIBUTION_SIZE: usize = 8;
 pub type TypeDistribution = Distribution<ProfiledType, DISTRIBUTION_SIZE>;
 
 pub type TypeDistributionSummary = DistributionSummary<ProfiledType, DISTRIBUTION_SIZE>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DispatchKey {
+    pub receiver: ProfiledType,
+    pub name: ID,
+}
+
+impl Default for DispatchKey {
+    fn default() -> Self {
+        Self { receiver: ProfiledType::empty(), name: ID(0) }
+    }
+}
+
+pub type DispatchDistribution = Distribution<DispatchKey, DISTRIBUTION_SIZE>;
+pub type DispatchDistributionSummary = DistributionSummary<DispatchKey, DISTRIBUTION_SIZE>;
 
 pub type SplatLength = u32;
 
@@ -435,6 +489,9 @@ pub struct IseqProfile {
 
     /// Observed lengths of caller splat arrays for call instructions.
     splat_lengths: HashMap<YarvInsnIdx, SplatLengthDistribution>,
+
+    /// Correlated receiver/name samples, allocated only for intrinsic sends.
+    dispatches: HashMap<YarvInsnIdx, DispatchDistribution>,
 }
 
 impl IseqProfile {
@@ -443,6 +500,7 @@ impl IseqProfile {
             entries: Vec::new(),
             super_cme: HashMap::new(),
             splat_lengths: HashMap::new(),
+            dispatches: HashMap::new(),
         }
     }
 
@@ -479,6 +537,10 @@ impl IseqProfile {
             .map(SplatLengthDistributionSummary::new)
     }
 
+    pub fn get_dispatch_summary(&self, insn_idx: YarvInsnIdx) -> Option<DispatchDistributionSummary> {
+        self.dispatches.get(&insn_idx).map(DispatchDistributionSummary::new)
+    }
+
     pub fn get_super_method_entry(&self, insn_idx: YarvInsnIdx) -> Option<*const rb_callable_method_entry_t> {
         let Some(entry) = self.super_cme.get(&insn_idx) else { return None };
         let summary = TypeDistributionSummary::new(entry);
@@ -506,6 +568,11 @@ impl IseqProfile {
                 callback(profiled_type.class)
             }
         }
+        for distribution in self.dispatches.values() {
+            for key in distribution.each_item() {
+                callback(key.receiver.class);
+            }
+        }
     }
 
     /// Run a given callback with a mutable reference to every object in IseqProfile.
@@ -525,20 +592,23 @@ impl IseqProfile {
                 callback(&mut profiled_type.class)
             }
         }
+        for distribution in self.dispatches.values_mut() {
+            for key in distribution.each_item_mut() {
+                callback(&mut key.receiver.class);
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::cruby::*;
-
-    use super::{Distribution, DistributionSummary, DISTRIBUTION_SIZE};
-    use crate::options::get_option;
-    use crate::payload::get_or_create_iseq_payload;
+    use super::*;
 
     #[test]
     fn test_dispatch_chain_missing_outer_method_has_no_profile() {
         with_rubyvm(|| {
+            assert_eq!(crate::state::ZJITState::get_method_annotations()
+                .reflective_send_kind(std::ptr::null()), None);
             assert_eq!(inspect("
                 class DispatchMissingOuter
                   def method_missing(name, selector) = [name, selector]
@@ -547,6 +617,8 @@ mod tests {
                 30.times { dispatch_missing_outer(DispatchMissingOuter.new) }
                 dispatch_missing_outer(DispatchMissingOuter.new)
             "), "[:absent, :inc]");
+            let iseq = get_method_iseq("self", "dispatch_missing_outer");
+            assert!(get_or_create_iseq_payload(iseq).profile.dispatches.is_empty());
         });
     }
 
@@ -564,6 +636,14 @@ mod tests {
         distribution.observe((0, 1));
         assert_eq!(distribution.each_item().count(), DISTRIBUTION_SIZE);
         assert!(DistributionSummary::new(&distribution).is_megamorphic());
+
+        // Also exercise the concrete key type used by dispatch profiles.
+        let mut distribution = DispatchDistribution::new();
+        for name in 1..=9 {
+            distribution.observe(DispatchKey { receiver: ProfiledType::empty(), name: ID(name) });
+        }
+        assert_eq!(distribution.each_item().count(), DISTRIBUTION_SIZE);
+        assert!(DispatchDistributionSummary::new(&distribution).is_megamorphic());
     }
 
     #[test]
@@ -587,10 +667,17 @@ mod tests {
                 GC.verify_compaction_references(expand_heap: true, toward: :empty)
                 [dispatch_profile(a, :a), dispatch_profile(b, :b)]
             "), "[1, 2]");
+            let a_id = unsafe { rb_get_symbol_id(eval(":a")) };
+            let b_id = unsafe { rb_get_symbol_id(eval(":b")) };
             let a = eval("DispatchProfileA");
             let b = eval("DispatchProfileB");
             let iseq = get_method_iseq("self", "dispatch_profile");
             let profile = &get_or_create_iseq_payload(iseq).profile;
+            assert_eq!(profile.dispatches.len(), 1);
+            let keys: Vec<_> = profile.dispatches.values().next().unwrap().each_item().collect();
+            assert_eq!(keys.len(), 2);
+            assert!(keys.iter().any(|key| key.receiver.class() == a && key.name == a_id));
+            assert!(keys.iter().any(|key| key.receiver.class() == b && key.name == b_id));
             let mut entries = profile.entries.iter().filter(|entry| !entry.opnd_types.is_empty());
             let operands = &entries.next().expect("call operands were profiled").opnd_types;
             assert!(entries.next().is_none());
@@ -627,6 +714,12 @@ mod tests {
                 30.times { raise unless dispatch_coercion(target, name) == 11 }
                 $coercions
             "), "30");
+            let iseq = get_method_iseq("self", "dispatch_coercion");
+            let profile = &get_or_create_iseq_payload(iseq).profile;
+            assert_eq!(profile.dispatches.len(), 1);
+            let keys: Vec<_> = profile.dispatches.values().next().unwrap().each_item().collect();
+            assert_eq!(keys.len(), 1);
+            assert_eq!(keys[0].name, ID(0));
             crate::options::set_call_threshold(old_threshold);
             crate::options::set_num_profiles(old_profiles);
         });

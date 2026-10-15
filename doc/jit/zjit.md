@@ -500,6 +500,47 @@ See [doc/contributing/vm_stack_and_frames.md](rdoc-ref:contributing/vm_stack_and
 - **Growth**: Upward from `vm_stack` (low addresses)
 - **Constants**: `SP`
 
+### Direct-call snapshots
+
+`SendDirect` and `PushInlineFrame` keep two snapshots. `state` describes the
+normalized argument layout used to build the callee frame; `exit_state` retains
+the original bytecode operands, including any block argument. Pre-entry guards
+and stack-overflow exits use `exit_state` so the interpreter can retry the
+original call. Stack growth and frame setup use `state`.
+
+An exit inside an inlined callee materializes that callee and its caller's
+post-send stack, rather than replaying the caller's argument evaluation.
+`SendDirectData.cd` remains the original calldata; `call_flags` describes the
+effective invocation independently of that calldata.
+
+### Method dispatch chains
+
+ZJIT samples up to eight correlated receiver/name keys for intrinsic `send`,
+`__send__`, and `public_send` implementations, including aliases. It emits
+guarded direct Ruby ISEQ calls that use the normal inliner. Known Symbol or frozen
+String names with nonzero existing IDs take precedence over shared name profiles,
+including after inlining. Other String names are resolved at runtime without
+coercion or interning, so mutation remains observable. Zero IDs are never folded,
+because even an immutable name can acquire an ID later. Unsupported names and
+calling conventions retain Ruby dispatch.
+
+Eligible missing calls can directly invoke a Ruby `method_missing` handler,
+prepending the canonical Symbol and preserving the VM's missing-call reason
+for `super`. Dependencies cover both the failed target lookup and the cached
+handler lookup, including any refinement wrapper bypassed by the VM's
+refinement-free handler lookup. Every tracked CME uses the existing cached
+lifetime marker so GC removes its weak dependency-map entry when it is freed.
+Normal inlining can then expose a proxy's delegated reflective call. Rest-array
+allocation may remain; dispatch elimination does not imply allocation removal.
+
+Each expanded send has an original generic fallback. Unseen names or receivers
+run that fallback and return to compiled code without growing a runtime cache
+or triggering selector-miss recompilation. Megamorphic profiles use generic
+dispatch. Method redefinition and singleton-class assumptions use the existing
+invalidation machinery. Reflective forwardable callees, keyword splats, and
+non-ISEQ targets remain generic; ordinary nonreflective specializations are
+unchanged.
+
 ## ZJIT Glossary
 
 This glossary contains terms that are helpful for understanding ZJIT.

@@ -96,10 +96,22 @@ mod hir_opt_tests {
           Jump bb3(v7, v8, v9)
         bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
           v18:StaticSymbol[:inc] = Const Value(VALUE(0x1008))
-          v21:BasicObject = Send v12, :__send__, v18, v13 # SendFallbackReason: Send: unsupported optimized method type Send
+          CondBranchHasType v12, ObjectSubclass[class_exact:DispatchNameIdTarget], bb6(), bb5()
+        bb6():
+          v32:ObjectSubclass[class_exact:DispatchNameIdTarget] = RefineType v12, ObjectSubclass[class_exact:DispatchNameIdTarget]
+          PatchPoint NoSingletonClass(DispatchNameIdTarget@0x1010)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchNameIdTarget@0x1010, __send__@0x1018, cme:0x1020)
+          PatchPoint MethodRedefined(DispatchNameIdTarget@0x1010, inc@0x1048, cme:0x1050)
+          v39:BasicObject = SendDirect v32, 0x0, :inc (0x1078), v13
+          Jump bb4(v39)
+        bb5():
+          v41:BasicObject = Send v12, :__send__, v18, v13 # SendFallbackReason: Send: dispatch chain fallback
+          Jump bb4(v41)
+        bb4(v29:BasicObject):
           PatchPoint NoEPEscape(dispatch_fold_symbol)
           CheckInterrupts
-          Return v21
+          Return v29
 
         fn dispatch_fold_string@<compiled>:6:
         bb1():
@@ -118,10 +130,27 @@ mod hir_opt_tests {
           v11:BasicObject = LoadArg :x@3
           Jump bb3(v8, v9, v10, v11)
         bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
-          v23:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+          v32:CUInt64 = SendNameId v15
+          CondBranchHasType v14, ObjectSubclass[class_exact:DispatchNameIdTarget], bb7(), bb5()
+        bb7():
+          v34:CUInt64[ID(:inc)] = Const CUInt64(ID(:inc))
+          v35:CBool = IsBitEqual v32, v34
+          CondBranch v35, bb6(), bb5()
+        bb6():
+          v38:ObjectSubclass[class_exact:DispatchNameIdTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchNameIdTarget]
+          PatchPoint NoSingletonClass(DispatchNameIdTarget@0x1008)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchNameIdTarget@0x1008, __send__@0x1010, cme:0x1018)
+          PatchPoint MethodRedefined(DispatchNameIdTarget@0x1008, inc@0x1040, cme:0x1048)
+          v45:BasicObject = SendDirect v38, 0x0, :inc (0x1070), v16
+          Jump bb4(v45)
+        bb5():
+          v47:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: dispatch chain fallback
+          Jump bb4(v47)
+        bb4(v31:BasicObject):
           PatchPoint NoEPEscape(dispatch_fold_string)
           CheckInterrupts
-          Return v23
+          Return v31
 
         fn dispatch_fold_object@<compiled>:7:
         bb1():
@@ -163,10 +192,22 @@ mod hir_opt_tests {
           PatchPoint StableConstantNames(0x1008, DISPATCH_FROZEN_NAME)
           v19:StringExact[VALUE(0x1010)] = Const Value(VALUE(0x1010))
           PatchPoint NoEPEscape(dispatch_fold_frozen)
-          v24:BasicObject = Send v12, :__send__, v19, v13 # SendFallbackReason: Send: unsupported optimized method type Send
+          CondBranchHasType v12, ObjectSubclass[class_exact:DispatchNameIdTarget], bb6(), bb5()
+        bb6():
+          v35:ObjectSubclass[class_exact:DispatchNameIdTarget] = RefineType v12, ObjectSubclass[class_exact:DispatchNameIdTarget]
+          PatchPoint NoSingletonClass(DispatchNameIdTarget@0x1018)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchNameIdTarget@0x1018, __send__@0x1020, cme:0x1028)
+          PatchPoint MethodRedefined(DispatchNameIdTarget@0x1018, inc@0x1050, cme:0x1058)
+          v42:BasicObject = SendDirect v35, 0x0, :inc (0x1080), v13
+          Jump bb4(v42)
+        bb5():
+          v44:BasicObject = Send v12, :__send__, v19, v13 # SendFallbackReason: Send: dispatch chain fallback
+          Jump bb4(v44)
+        bb4(v32:BasicObject):
           PatchPoint NoEPEscape(dispatch_fold_frozen)
           CheckInterrupts
-          Return v24
+          Return v32
 
         fn dispatch_fold_frozen_subclass@<compiled>:23:
         bb1():
@@ -186,10 +227,101 @@ mod hir_opt_tests {
           PatchPoint StableConstantNames(0x1008, DISPATCH_FROZEN_SUBCLASS_NAME)
           v19:StringSubclass[VALUE(0x1010)] = Const Value(VALUE(0x1010))
           PatchPoint NoEPEscape(dispatch_fold_frozen_subclass)
-          v24:BasicObject = Send v12, :__send__, v19, v13 # SendFallbackReason: Send: unsupported optimized method type Send
+          CondBranchHasType v12, ObjectSubclass[class_exact:DispatchNameIdTarget], bb6(), bb5()
+        bb6():
+          v35:ObjectSubclass[class_exact:DispatchNameIdTarget] = RefineType v12, ObjectSubclass[class_exact:DispatchNameIdTarget]
+          PatchPoint NoSingletonClass(DispatchNameIdTarget@0x1018)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchNameIdTarget@0x1018, __send__@0x1020, cme:0x1028)
+          PatchPoint MethodRedefined(DispatchNameIdTarget@0x1018, inc@0x1050, cme:0x1058)
+          v42:BasicObject = SendDirect v35, 0x0, :inc (0x1080), v13
+          Jump bb4(v42)
+        bb5():
+          v44:BasicObject = Send v12, :__send__, v19, v13 # SendFallbackReason: Send: dispatch chain fallback
+          Jump bb4(v44)
+        bb4(v32:BasicObject):
           PatchPoint NoEPEscape(dispatch_fold_frozen_subclass)
           CheckInterrupts
-          Return v24
+          Return v32
+        ");
+
+        let mut snapshots = Vec::new();
+        for (expression, folds) in [
+            (":inc", true),
+            ("String.new('inc')", false),
+            ("Object.new", false),
+            ("String.new('inc').freeze", true),
+            ("DispatchNameIdString.new('inc').freeze", true),
+            ("('dispatch_fold_unknown_' + 'c0e21a').freeze", false),
+            ("('dispatch_fold_unpinned_' + '6c214f').to_sym", false),
+        ] {
+            let value = eval(expression);
+            let mut function = Function::new(std::ptr::null());
+            let block = function.entry_block;
+            let name = function.push_insn(block, Insn::Const { val: Const::Value(value) });
+            let id = function.push_insn(block, Insn::SendNameId { name });
+            function.push_insn(block, Insn::Return { val: name });
+            function.seal_entries();
+            function.infer_types();
+            function.fold_constants();
+            function.validate().unwrap();
+            if folds {
+                assert!(matches!(function.find(id), Insn::Const { val: Const::CUInt64(id) }
+                    if id == unsafe { rb_get_symbol_id(value) }.0 as u64 && id != 0));
+            } else {
+                assert!(matches!(function.find(id), Insn::SendNameId { .. }));
+            }
+            snapshots.push(format!("{expression}:\n{}", hir_string_with_selector_names(&function, &["inc"])));
+        }
+        assert_snapshot!(snapshots.join("\n"), @"
+        :inc:
+        fn <manual>:
+        bb1():
+          v0:StaticSymbol[:inc] = Const Value(VALUE(0x1000))
+          v4:CUInt64[ID(:inc)] = Const CUInt64(ID(:inc))
+          Return v0
+
+        String.new('inc'):
+        fn <manual>:
+        bb1():
+          v0:StringExact[VALUE(0x1000)] = Const Value(VALUE(0x1000))
+          v1:CUInt64 = SendNameId v0
+          Return v0
+
+        Object.new:
+        fn <manual>:
+        bb1():
+          v0:ObjectExact[VALUE(0x1000)] = Const Value(VALUE(0x1000))
+          v1:CUInt64 = SendNameId v0
+          Return v0
+
+        String.new('inc').freeze:
+        fn <manual>:
+        bb1():
+          v0:StringExact[VALUE(0x1000)] = Const Value(VALUE(0x1000))
+          v4:CUInt64[ID(:inc)] = Const CUInt64(ID(:inc))
+          Return v0
+
+        DispatchNameIdString.new('inc').freeze:
+        fn <manual>:
+        bb1():
+          v0:StringSubclass[VALUE(0x1000)] = Const Value(VALUE(0x1000))
+          v4:CUInt64[ID(:inc)] = Const CUInt64(ID(:inc))
+          Return v0
+
+        ('dispatch_fold_unknown_' + 'c0e21a').freeze:
+        fn <manual>:
+        bb1():
+          v0:StringExact[VALUE(0x1000)] = Const Value(VALUE(0x1000))
+          v1:CUInt64 = SendNameId v0
+          Return v0
+
+        ('dispatch_fold_unpinned_' + '6c214f').to_sym:
+        fn <manual>:
+        bb1():
+          v0:DynamicSymbol[:dispatch_fold_unpinned_6c214f] = Const Value(VALUE(0x1000))
+          v1:CUInt64 = SendNameId v0
+          Return v0
         ");
     }
 
@@ -227,11 +359,53 @@ mod hir_opt_tests {
             dispatch_frame_entry(1, nil)
             dispatch_frame_entry(1, nil)
         ");
+        let callee = crate::cruby::with_rubyvm(|| get_method_iseq("self", "dispatch_frame_target"));
+        let iseq = crate::cruby::with_rubyvm(|| get_method_iseq("self", "dispatch_frame_entry"));
+        unsafe { crate::cruby::rb_zjit_profile_disable(iseq) };
         let old_threshold = get_option!(inline_threshold);
         let mut snapshots = Vec::new();
         for threshold in [0, 100] {
             set_inline_threshold(threshold);
-            let function = dispatch_chain_hir("dispatch_frame_entry");
+            let mut function = iseq_to_hir(iseq).unwrap();
+            function.optimize();
+            function.validate().unwrap();
+            let calls: Vec<_> = function.reverse_post_order().into_iter()
+                .flat_map(|block| function.blocks[block].insns.iter().copied())
+                .filter_map(|id| match function.find(id) {
+                    Insn::SendDirect(data) => Some((data.state, data.exit_state)),
+                    Insn::PushInlineFrame { state, exit_state, .. } => Some((state, exit_state)),
+                    _ => None,
+                }).collect();
+            assert_eq!(calls.len(), 1, "{}", hir_string_function(&function));
+            let (state, exit_state) = calls[0];
+            let normalized = function.frame_state(state);
+            let original = function.frame_state(exit_state);
+            let original_args: Vec<_> = original.stack().copied().collect();
+            let normalized_args: Vec<_> = normalized.stack().copied().collect();
+            assert_eq!(original_args.len(), 5);
+            assert_eq!(normalized_args.len(), 4);
+            assert_eq!(original_args[1], normalized_args[1]);
+            if original_args[0] != normalized_args[0] {
+                assert!(matches!(function.find(normalized_args[0]), Insn::GuardType { val, .. }
+                    if val == original_args[0]));
+            }
+            assert_eq!(original_args[3], normalized_args[3]);
+            assert!(matches!(function.find(normalized_args[2]), Insn::NewArray { elements, .. }
+                if elements == vec![original_args[2]]));
+            assert_eq!(original.pc, normalized.pc);
+            if threshold != 0 {
+                let parents: Vec<_> = (0..function.num_insns()).map(InsnId::from)
+                    .filter_map(|id| match function.find(id) {
+                        Insn::Snapshot { state } if state.iseq == callee => state.caller(),
+                        _ => None,
+                    }).collect();
+                assert!(!parents.is_empty());
+                for parent in parents {
+                    let parent = function.frame_state(parent);
+                    assert_eq!(parent.iseq, iseq);
+                    assert_eq!(parent.stack_size(), 0);
+                }
+            }
             snapshots.push(format!("inline_threshold={threshold}:\n{}", hir_string_function(&function)));
         }
         set_inline_threshold(old_threshold);
@@ -254,14 +428,14 @@ mod hir_opt_tests {
         bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
           v19:Fixnum[2] = Const Value(2)
           v21:Fixnum[3] = Const Value(3)
-          v32:NilClass = GuardBitEquals v13, Value(nil) recompile
           PatchPoint MethodRedefined(Object@0x1008, dispatch_frame_target@0x1010, cme:0x1018)
-          v35:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
-          v36:ArrayExact = NewArray v19
-          v38:BasicObject = SendDirect v35, 0x0, :dispatch_frame_target (0x1040), v12, v36, v21
+          v33:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v34:NilClass = GuardBitEquals v13, Value(nil) recompile
+          v35:ArrayExact = NewArray v19
+          v37:BasicObject = SendDirect v33, 0x0, :dispatch_frame_target (0x1040), v12, v35, v21
           PatchPoint NoEPEscape(dispatch_frame_entry)
           CheckInterrupts
-          Return v38
+          Return v37
 
         inline_threshold=100:
         fn dispatch_frame_entry@<compiled>:3:
@@ -281,17 +455,17 @@ mod hir_opt_tests {
         bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
           v19:Fixnum[2] = Const Value(2)
           v21:Fixnum[3] = Const Value(3)
-          v32:NilClass = GuardBitEquals v13, Value(nil) recompile
           PatchPoint MethodRedefined(Object@0x1008, dispatch_frame_target@0x1010, cme:0x1018)
-          v35:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
-          v36:ArrayExact = NewArray v19
-          v55:Fixnum[0] = Const Value(0)
-          PushInlineFrame :dispatch_frame_target, v35 (0x1040), num_args=3
-          v51:ArrayExact = NewArray v12, v36, v21
+          v33:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v34:NilClass = GuardBitEquals v13, Value(nil) recompile
+          v35:ArrayExact = NewArray v19
+          v54:Fixnum[0] = Const Value(0)
+          PushInlineFrame :dispatch_frame_target, v33 (0x1040), num_args=3
+          v50:ArrayExact = NewArray v12, v35, v21
           PopInlineFrame
           PatchPoint NoEPEscape(dispatch_frame_entry)
           CheckInterrupts
-          Return v51
+          Return v50
         ");
     }
 
@@ -320,6 +494,217 @@ mod hir_opt_tests {
         function
     }
 
+    // Removed blocks and superseded instructions must not count as live leaves.
+    fn dispatch_chain_insns(function: &Function) -> impl Iterator<Item = &Insn> {
+        function.reverse_post_order().into_iter().flat_map(move |block| {
+            function.blocks[block].insns.iter().map(move |&id| function.find_ref(id))
+        })
+    }
+
+    fn dispatch_chain_profile(function: &Function) -> crate::profile::DispatchDistributionSummary {
+        let state = dispatch_chain_insns(function).find_map(|insn| match insn {
+            Insn::Send { state, .. } => Some(*state),
+            _ => None,
+        }).expect("expected a generic reflective call or dispatch tail");
+        let frame = function.frame_state(state);
+        let payload = crate::payload::get_iseq_payload_ptr(frame.iseq);
+        assert!(!payload.is_null());
+        unsafe { (*payload).profile.get_dispatch_summary(frame.insn_idx()) }
+            .expect("expected correlated receiver/name feedback")
+    }
+
+    fn dispatch_chain_direct_call(function: &Function, iseq: IseqPtr) -> (BlockId, usize, &SendDirectData) {
+        let calls: Vec<_> = function.reverse_post_order().into_iter().flat_map(|block| {
+            function.blocks[block].insns.iter().enumerate().filter_map(move |(position, &id)| {
+                match function.find_ref(id) {
+                    Insn::SendDirect(data) if data.iseq == iseq => Some((block, position, data.as_ref())),
+                    _ => None,
+                }
+            })
+        }).collect();
+        assert_eq!(calls.len(), 1, "{}", hir_string_function(function));
+        calls[0]
+    }
+
+    fn hir_iseq_call_args(function: &Function, callee: IseqPtr) -> Vec<Vec<InsnId>> {
+        dispatch_chain_insns(function).filter_map(|insn| match insn {
+            Insn::SendDirect(data) if data.iseq == callee =>
+                Some(data.args.iter().map(|&arg| function.find_id(arg)).collect()),
+            Insn::PushInlineFrame { iseq, state, num_args, .. } if *iseq == callee => {
+                let frame = function.frame_state(*state);
+                Some(frame.stack().skip(frame.stack_size() - usize::from(*num_args)).copied().collect())
+            }
+            _ => None,
+        }).collect()
+    }
+
+    #[track_caller]
+    fn assert_hir_const(function: &Function, value: InsnId, expected: VALUE) {
+        assert!(matches!(function.find(value), Insn::Const { val: Const::Value(actual) } if actual == expected),
+            "expected {expected:?}, got {:?}", function.find(value));
+    }
+
+    fn hir_return_value(function: &Function) -> InsnId {
+        let returns: Vec<_> = dispatch_chain_insns(function).filter_map(|insn| match insn {
+            Insn::Return { val } => Some(function.find_id(*val)),
+            _ => None,
+        }).collect();
+        assert_eq!(returns.len(), 1, "{}", hir_string_function(function));
+        returns[0]
+    }
+
+    #[track_caller]
+    fn assert_hir_splat_element(function: &Function, value: InsnId, expected_index: i64) {
+        let Insn::ArrayAref { array, index } = function.find(value) else {
+            panic!("expected splat element {expected_index}, got {:?}", function.find(value));
+        };
+        assert!(matches!(function.find(array), Insn::ToArray { .. }));
+        assert!(matches!(function.find(index), Insn::Const { val: Const::CInt64(index) } if index == expected_index));
+    }
+
+    #[track_caller]
+    fn assert_hir_splat_guards(function: &Function, expected_lengths: &[i64]) {
+        let mut lengths = vec![];
+        for insn in dispatch_chain_insns(function) {
+            let Insn::GuardBitEquals { val, expected: Const::CInt64(length), state, recompile, .. } = insn else { continue };
+            let Insn::ArrayLength { array } = function.find(*val) else { continue };
+            lengths.push(*length);
+            assert!(recompile.is_some());
+            assert!(function.frame_state(*state).stack().any(|&id| id == array),
+                "length exits must retain the original splat array, not expanded arguments");
+            if *length != 0 {
+                assert!(dispatch_chain_insns(function).any(|insn| match insn {
+                    Insn::GuardBitEquals { val, expected: Const::CInt64(0), recompile: None, .. } => {
+                        matches!(function.find(*val), Insn::CCall { cfunc, recv, .. }
+                            if cfunc == rb_jit_ruby2_keywords_splat_p as *const u8 && recv == array)
+                    }
+                    _ => false,
+                }), "nonempty splats must reject ruby2_keywords hashes without recompiling");
+            }
+        }
+        lengths.sort_unstable();
+        let mut expected = expected_lengths.to_vec();
+        expected.sort_unstable();
+        assert_eq!(lengths, expected, "{}", hir_string_function(function));
+    }
+
+    #[track_caller]
+    fn assert_hir_single_fallback(function: &Function, method: &str, reason: SendFallbackReason, argc: usize, block: Option<BlockHandler>) -> (InsnId, Vec<InsnId>, InsnId) {
+        let sends: Vec<_> = dispatch_chain_insns(function).filter(|insn| matches!(insn, Insn::Send { .. })).collect();
+        assert_eq!(sends.len(), 1, "{}", hir_string_function(function));
+        let Insn::Send { recv, cd, args, state, reason: actual_reason, block: actual_block, .. } = sends[0] else { unreachable!() };
+        assert_eq!(ruby_call_method_name(*cd), method);
+        assert_eq!(*actual_reason, reason);
+        assert_eq!(*actual_block, block);
+        assert_eq!(args.len(), argc);
+        let args: Vec<_> = args.iter().map(|&arg| function.find_id(arg)).collect();
+        let frame = function.frame_state(*state);
+        let stack: Vec<_> = frame.stack().copied().collect();
+        assert_eq!(&stack[stack.len() - argc..], args.as_slice(), "fallback must retain the original operands");
+        (function.find_id(*recv), args, *state)
+    }
+
+    #[track_caller]
+    fn assert_hir_nil_block_guards(function: &Function, expected_count: usize) {
+        let guards: Vec<_> = dispatch_chain_insns(function).filter_map(|insn| match insn {
+            Insn::GuardBitEquals { val, expected: Const::Value(value), state, recompile, reason }
+                if *value == Qnil && matches!(**reason, SideExitReason::BlockArgNotNil) => Some((*val, *state, recompile)),
+            _ => None,
+        }).collect();
+        assert_eq!(guards.len(), expected_count);
+        for (value, state, recompile) in guards {
+            assert!(recompile.is_some());
+            assert_eq!(function.frame_state(state).stack().last().copied(), Some(function.find_id(value)));
+        }
+    }
+
+    #[track_caller]
+    fn assert_hir_proc_block_call(function: &Function, callee: IseqPtr, argc: usize) -> &SendDirectData {
+        let (_, _, call) = dispatch_chain_direct_call(function, callee);
+        assert_eq!(call.args.len(), argc);
+        let Some(BlockHandler::BlockArgProc(block)) = call.block else { panic!("expected a normalized Proc block") };
+        let Insn::GuardType { val, guard_type, state, recompile, .. } = function.find(block) else { panic!("expected a Proc guard") };
+        assert_eq!(guard_type.exact_ruby_class(), Some(unsafe { rb_cProc }));
+        assert!(recompile.is_some());
+        assert_eq!(function.find_id(state), function.find_id(call.exit_state));
+        assert_eq!(function.frame_state(call.exit_state).stack().last().copied(), Some(val));
+        assert!(!function.frame_state(call.state).stack().any(|&id| id == val));
+        assert!(!dispatch_chain_insns(function).any(|insn| matches!(insn,
+            Insn::PushInlineFrame { iseq, .. } if *iseq == callee
+        )), "Proc-block calls must not enter the literal-block inliner");
+        call
+    }
+
+    fn assert_dispatch_chain_missing_dependencies(function: &Function, klass: VALUE, name: ID, handler: *const rb_callable_method_entry_t) {
+        assert!(dispatch_chain_insns(function).any(|insn| matches!(insn,
+            Insn::PatchPoint { invariant: Invariant::MethodRedefined { klass: guarded_class, method, cme }, .. }
+                if *guarded_class == klass && *method == name && !cme.is_null()
+                    && unsafe { get_cme_def_type(*cme) } == VM_METHOD_TYPE_UNDEF
+        )), "the failed target lookup needs its own negative-CME dependency");
+        assert!(dispatch_chain_insns(function).any(|insn| matches!(insn,
+            Insn::PatchPoint { invariant: Invariant::MethodRedefined { klass: guarded_class, method, cme }, .. }
+                if *guarded_class == klass && *cme == handler && *method == unsafe { (*handler).called_id }
+        )), "tracking only the handler cannot invalidate a newly defined target");
+    }
+
+    fn assert_dispatch_chain_reason_before_call(function: &Function, block: BlockId, position: usize, expected: u32) -> usize {
+        let insns = &function.blocks[block].insns;
+        let reason_position = (0..position).rev().find(|&index| {
+            !matches!(function.find_ref(insns[index]), Insn::Snapshot { .. })
+        }).expect("the handler must have a missing-call reason");
+        assert!(matches!(function.find_ref(insns[reason_position]),
+            Insn::SetMethodMissingReason { reason } if *reason == expected
+        ), "nothing that can allocate, call Ruby, or exit may intervene before handler entry");
+        assert_eq!(dispatch_chain_insns(function).filter(|insn| matches!(insn,
+            Insn::SetMethodMissingReason { .. }
+        )).count(), 1);
+        reason_position
+    }
+
+    #[track_caller]
+    fn assert_dispatch_chain_two_names(function: &Function, expected: &[(ID, IseqPtr)], outer_id: ID, public_only: bool) {
+        assert!(dispatch_chain_profile(function).is_polymorphic());
+        let leaves: Vec<_> = dispatch_chain_insns(function).filter_map(|insn| match insn {
+            Insn::SendDirect(data) => Some(data),
+            _ => None,
+        }).collect();
+        assert_eq!(leaves.len(), 2, "{}", hir_string_function(function));
+        for &(name, iseq) in expected {
+            let leaf = leaves.iter().find(|leaf| unsafe { (*leaf.cme).called_id } == name)
+                .expect("both sampled names must have a direct leaf");
+            assert_eq!(leaf.iseq, iseq);
+            assert_eq!(leaf.args.len(), 1, "the selector is not a target argument");
+            assert_ne!(leaf.call_flags & VM_CALL_OPT_SEND, 0);
+            assert_eq!(leaf.call_flags & VM_CALL_FCALL == 0, public_only);
+            assert_eq!(ruby_call_method_id(leaf.cd), outer_id);
+        }
+        let sends: Vec<_> = dispatch_chain_insns(function).filter_map(|insn| match insn {
+            Insn::Send { cd, args, reason, .. } => Some((*cd, args, *reason)),
+            _ => None,
+        }).collect();
+        assert_eq!(sends.len(), 1, "{}", hir_string_function(function));
+        assert_eq!(sends[0].2, SendFallbackReason::SendDispatchFallback);
+        assert_eq!(ruby_call_method_id(sends[0].0), outer_id);
+        assert_eq!(sends[0].1.len(), 2, "the generic tail retains its selector");
+        assert!(!dispatch_chain_insns(function).any(|insn| matches!(insn, Insn::PushInlineFrame { .. })));
+        assert_eq!(dispatch_chain_insns(function).filter(|insn| matches!(insn, Insn::SendNameId { .. })).count(), 1);
+        let compared_ids: Vec<_> = dispatch_chain_insns(function).filter_map(|insn| {
+            let Insn::IsBitEqual { left, right } = insn else { return None };
+            for (name, expected) in [(*left, *right), (*right, *left)] {
+                if matches!(function.find_ref(name), Insn::SendNameId { .. }) {
+                    if let Insn::Const { val: Const::CUInt64(id) } = function.find_ref(expected) {
+                        return Some(*id);
+                    }
+                }
+            }
+            None
+        }).collect();
+        assert_eq!(compared_ids.len(), 2);
+        for &(name, _) in expected {
+            assert!(compared_ids.contains(&(name.0 as u64)));
+        }
+        assert!(dispatch_chain_insns(function).filter(|insn| matches!(insn, Insn::CondBranchHasType(_))).count() <= 2);
+    }
 
     #[test]
     fn test_dispatch_chain_dynamic_dunder_send() {
@@ -333,7 +718,13 @@ mod hir_opt_tests {
                 o = DispatchDynamicTarget.new
                 128.times { |i| dispatch_dynamic(o, i.even? ? :inc : :dec, 10) }
             ");
+            let expected = [
+                (unsafe { rb_get_symbol_id(eval(":inc")) }, get_method_iseq("DispatchDynamicTarget.new", "inc")),
+                (unsafe { rb_get_symbol_id(eval(":dec")) }, get_method_iseq("DispatchDynamicTarget.new", "dec")),
+            ];
+            let outer_id = unsafe { rb_get_symbol_id(eval(":__send__")) };
             let function = dispatch_chain_hir("dispatch_dynamic");
+            assert_dispatch_chain_two_names(&function, &expected, outer_id, false);
             hir_string_with_selector_names(&function, &["inc", "dec"])
         });
         assert_snapshot!(hir, @"
@@ -354,10 +745,41 @@ mod hir_opt_tests {
           v11:BasicObject = LoadArg :x@3
           Jump bb3(v8, v9, v10, v11)
         bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
-          v23:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+          v32:CUInt64 = SendNameId v15
+          CondBranchHasType v14, ObjectSubclass[class_exact:DispatchDynamicTarget], bb8(), bb7()
+        bb8():
+          v34:CUInt64[ID(:inc)] = Const CUInt64(ID(:inc))
+          v35:CBool = IsBitEqual v32, v34
+          CondBranch v35, bb6(), bb7()
+        bb6():
+          v38:ObjectSubclass[class_exact:DispatchDynamicTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchDynamicTarget]
+          PatchPoint NoSingletonClass(DispatchDynamicTarget@0x1008)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchDynamicTarget@0x1008, __send__@0x1010, cme:0x1018)
+          PatchPoint MethodRedefined(DispatchDynamicTarget@0x1008, inc@0x1040, cme:0x1048)
+          v45:BasicObject = SendDirect v38, 0x0, :inc (0x1070), v16
+          Jump bb4(v45)
+        bb7():
+          CondBranchHasType v14, ObjectSubclass[class_exact:DispatchDynamicTarget], bb10(), bb5()
+        bb10():
+          v48:CUInt64[ID(:dec)] = Const CUInt64(ID(:dec))
+          v49:CBool = IsBitEqual v32, v48
+          CondBranch v49, bb9(), bb5()
+        bb9():
+          v52:ObjectSubclass[class_exact:DispatchDynamicTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchDynamicTarget]
+          PatchPoint NoSingletonClass(DispatchDynamicTarget@0x1008)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchDynamicTarget@0x1008, __send__@0x1010, cme:0x1018)
+          PatchPoint MethodRedefined(DispatchDynamicTarget@0x1008, dec@0x1090, cme:0x1098)
+          v59:BasicObject = SendDirect v52, 0x0, :dec (0x10c0), v16
+          Jump bb4(v59)
+        bb5():
+          v61:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: dispatch chain fallback
+          Jump bb4(v61)
+        bb4(v31:BasicObject):
           PatchPoint NoEPEscape(dispatch_dynamic)
           CheckInterrupts
-          Return v23
+          Return v31
         ");
     }
 
@@ -373,7 +795,13 @@ mod hir_opt_tests {
                 o = DispatchDynamicTarget.new
                 128.times { |i| dispatch_dynamic(o, i.even? ? :inc : :dec, 10) }
             ");
+            let expected = [
+                (unsafe { rb_get_symbol_id(eval(":inc")) }, get_method_iseq("DispatchDynamicTarget.new", "inc")),
+                (unsafe { rb_get_symbol_id(eval(":dec")) }, get_method_iseq("DispatchDynamicTarget.new", "dec")),
+            ];
+            let outer_id = unsafe { rb_get_symbol_id(eval(":send")) };
             let function = dispatch_chain_hir("dispatch_dynamic");
+            assert_dispatch_chain_two_names(&function, &expected, outer_id, false);
             hir_string_with_selector_names(&function, &["inc", "dec"])
         });
         assert_snapshot!(hir, @"
@@ -394,10 +822,41 @@ mod hir_opt_tests {
           v11:BasicObject = LoadArg :x@3
           Jump bb3(v8, v9, v10, v11)
         bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
-          v23:BasicObject = Send v14, :send, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+          v32:CUInt64 = SendNameId v15
+          CondBranchHasType v14, ObjectSubclass[class_exact:DispatchDynamicTarget], bb8(), bb7()
+        bb8():
+          v34:CUInt64[ID(:inc)] = Const CUInt64(ID(:inc))
+          v35:CBool = IsBitEqual v32, v34
+          CondBranch v35, bb6(), bb7()
+        bb6():
+          v38:ObjectSubclass[class_exact:DispatchDynamicTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchDynamicTarget]
+          PatchPoint NoSingletonClass(DispatchDynamicTarget@0x1008)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchDynamicTarget@0x1008, send@0x1010, cme:0x1018)
+          PatchPoint MethodRedefined(DispatchDynamicTarget@0x1008, inc@0x1040, cme:0x1048)
+          v45:BasicObject = SendDirect v38, 0x0, :inc (0x1070), v16
+          Jump bb4(v45)
+        bb7():
+          CondBranchHasType v14, ObjectSubclass[class_exact:DispatchDynamicTarget], bb10(), bb5()
+        bb10():
+          v48:CUInt64[ID(:dec)] = Const CUInt64(ID(:dec))
+          v49:CBool = IsBitEqual v32, v48
+          CondBranch v49, bb9(), bb5()
+        bb9():
+          v52:ObjectSubclass[class_exact:DispatchDynamicTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchDynamicTarget]
+          PatchPoint NoSingletonClass(DispatchDynamicTarget@0x1008)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchDynamicTarget@0x1008, send@0x1010, cme:0x1018)
+          PatchPoint MethodRedefined(DispatchDynamicTarget@0x1008, dec@0x1090, cme:0x1098)
+          v59:BasicObject = SendDirect v52, 0x0, :dec (0x10c0), v16
+          Jump bb4(v59)
+        bb5():
+          v61:BasicObject = Send v14, :send, v15, v16 # SendFallbackReason: Send: dispatch chain fallback
+          Jump bb4(v61)
+        bb4(v31:BasicObject):
           PatchPoint NoEPEscape(dispatch_dynamic)
           CheckInterrupts
-          Return v23
+          Return v31
         ");
     }
 
@@ -413,7 +872,13 @@ mod hir_opt_tests {
                 o = DispatchDynamicTarget.new
                 128.times { |i| dispatch_dynamic(o, i.even? ? :inc : :dec, 10) }
             ");
+            let expected = [
+                (unsafe { rb_get_symbol_id(eval(":inc")) }, get_method_iseq("DispatchDynamicTarget.new", "inc")),
+                (unsafe { rb_get_symbol_id(eval(":dec")) }, get_method_iseq("DispatchDynamicTarget.new", "dec")),
+            ];
+            let outer_id = unsafe { rb_get_symbol_id(eval(":public_send")) };
             let function = dispatch_chain_hir("dispatch_dynamic");
+            assert_dispatch_chain_two_names(&function, &expected, outer_id, true);
             hir_string_with_selector_names(&function, &["inc", "dec"])
         });
         assert_snapshot!(hir, @"
@@ -434,13 +899,41 @@ mod hir_opt_tests {
           v11:BasicObject = LoadArg :x@3
           Jump bb3(v8, v9, v10, v11)
         bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
+          v32:CUInt64 = SendNameId v15
+          CondBranchHasType v14, ObjectSubclass[class_exact:DispatchDynamicTarget], bb8(), bb7()
+        bb8():
+          v34:CUInt64[ID(:inc)] = Const CUInt64(ID(:inc))
+          v35:CBool = IsBitEqual v32, v34
+          CondBranch v35, bb6(), bb7()
+        bb6():
+          v38:ObjectSubclass[class_exact:DispatchDynamicTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchDynamicTarget]
           PatchPoint NoSingletonClass(DispatchDynamicTarget@0x1008)
+          PatchPoint RootBoxOnly
           PatchPoint MethodRedefined(DispatchDynamicTarget@0x1008, public_send@0x1010, cme:0x1018)
-          v34:ObjectSubclass[class_exact:DispatchDynamicTarget] = GuardType v14, ObjectSubclass[class_exact:DispatchDynamicTarget] recompile
-          v35:BasicObject = CCallVariadic v34, :Kernel#public_send@0x1040, v15, v16
+          PatchPoint MethodRedefined(DispatchDynamicTarget@0x1008, inc@0x1040, cme:0x1048)
+          v45:BasicObject = SendDirect v38, 0x0, :inc (0x1070), v16
+          Jump bb4(v45)
+        bb7():
+          CondBranchHasType v14, ObjectSubclass[class_exact:DispatchDynamicTarget], bb10(), bb5()
+        bb10():
+          v48:CUInt64[ID(:dec)] = Const CUInt64(ID(:dec))
+          v49:CBool = IsBitEqual v32, v48
+          CondBranch v49, bb9(), bb5()
+        bb9():
+          v52:ObjectSubclass[class_exact:DispatchDynamicTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchDynamicTarget]
+          PatchPoint NoSingletonClass(DispatchDynamicTarget@0x1008)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchDynamicTarget@0x1008, public_send@0x1010, cme:0x1018)
+          PatchPoint MethodRedefined(DispatchDynamicTarget@0x1008, dec@0x1090, cme:0x1098)
+          v59:BasicObject = SendDirect v52, 0x0, :dec (0x10c0), v16
+          Jump bb4(v59)
+        bb5():
+          v61:BasicObject = Send v14, :public_send, v15, v16 # SendFallbackReason: Send: dispatch chain fallback
+          Jump bb4(v61)
+        bb4(v31:BasicObject):
           PatchPoint NoEPEscape(dispatch_dynamic)
           CheckInterrupts
-          Return v35
+          Return v31
         ");
     }
 
@@ -463,7 +956,33 @@ mod hir_opt_tests {
                   i.even? ? dispatch_correlated(a, :a, 10) : dispatch_correlated(b, :b, 10)
                 end
             ");
+            // Both cross-pair methods exist: their absence from the chain must be
+            // due to correlation, not an unsuccessful lookup or argument check.
+            let expected = [
+                (eval("DispatchCorrelatedA"), unsafe { rb_get_symbol_id(eval(":a")) }, get_method_iseq("DispatchCorrelatedA.new", "a")),
+                (eval("DispatchCorrelatedB"), unsafe { rb_get_symbol_id(eval(":b")) }, get_method_iseq("DispatchCorrelatedB.new", "b")),
+            ];
             let function = dispatch_chain_hir("dispatch_correlated");
+            let leaves: Vec<_> = dispatch_chain_insns(&function).filter_map(|insn| match insn {
+                Insn::SendDirect(data) => Some((
+                    function.type_of(data.recv).exact_ruby_class().unwrap(),
+                    unsafe { (*data.cme).called_id },
+                    data.iseq,
+                )),
+                _ => None,
+            }).collect();
+            assert_eq!(leaves.len(), 2, "{}", hir_string_function(&function));
+            for pair in expected {
+                assert!(leaves.contains(&pair), "unexpected receiver/name leaves: {leaves:?}");
+            }
+            // Existing receiver branches are reused, not duplicated in each name arm.
+            assert_eq!(dispatch_chain_insns(&function).filter(|insn| matches!(insn, Insn::CondBranchHasType(_))).count(), 2);
+            assert_eq!(dispatch_chain_insns(&function).filter(|insn| matches!(insn,
+                Insn::Send { reason: SendFallbackReason::SendDispatchFallback, .. }
+            )).count(), 2);
+            assert_eq!(dispatch_chain_insns(&function).filter(|insn| matches!(insn,
+                Insn::Send { reason: SendFallbackReason::SendPolymorphicFallback, .. }
+            )).count(), 1);
             assert_snapshot!(hir_string_with_selector_names(&function, &["a", "b"]), @"
             fn dispatch_correlated@<compiled>:10:
             bb1():
@@ -485,14 +1004,42 @@ mod hir_opt_tests {
               CondBranchHasType v14, ObjectSubclass[class_exact:DispatchCorrelatedA], bb6(), bb7()
             bb6():
               v26:ObjectSubclass[class_exact:DispatchCorrelatedA] = RefineType v14, ObjectSubclass[class_exact:DispatchCorrelatedA]
-              v27:BasicObject = Send v26, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
-              Jump bb4(v27)
+              v44:CUInt64 = SendNameId v15
+              v45:CUInt64[ID(:a)] = Const CUInt64(ID(:a))
+              v46:CBool = IsBitEqual v44, v45
+              CondBranch v46, bb11(), bb10()
+            bb11():
+              PatchPoint NoSingletonClass(DispatchCorrelatedA@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchCorrelatedA@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchCorrelatedA@0x1008, a@0x1040, cme:0x1048)
+              v56:BasicObject = SendDirect v26, 0x0, :a (0x1070), v16
+              Jump bb9(v56)
+            bb10():
+              v58:BasicObject = Send v26, :__send__, v15, v16 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb9(v58)
+            bb9(v43:BasicObject):
+              Jump bb4(v43)
             bb7():
               CondBranchHasType v14, ObjectSubclass[class_exact:DispatchCorrelatedB], bb8(), bb5()
             bb8():
               v31:ObjectSubclass[class_exact:DispatchCorrelatedB] = RefineType v14, ObjectSubclass[class_exact:DispatchCorrelatedB]
-              v32:BasicObject = Send v31, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
-              Jump bb4(v32)
+              v61:CUInt64 = SendNameId v15
+              v62:CUInt64[ID(:b)] = Const CUInt64(ID(:b))
+              v63:CBool = IsBitEqual v61, v62
+              CondBranch v63, bb14(), bb13()
+            bb14():
+              PatchPoint NoSingletonClass(DispatchCorrelatedB@0x1090)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchCorrelatedB@0x1090, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchCorrelatedB@0x1090, b@0x1098, cme:0x10a0)
+              v73:BasicObject = SendDirect v31, 0x0, :b (0x10c8), v16
+              Jump bb12(v73)
+            bb13():
+              v75:BasicObject = Send v31, :__send__, v15, v16 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb12(v75)
+            bb12(v60:BasicObject):
+              Jump bb4(v60)
             bb5():
               v34:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: polymorphic fallback
               Jump bb4(v34)
@@ -507,6 +1054,7 @@ mod hir_opt_tests {
     #[test]
     fn test_dispatch_chain_eight_keys_and_megamorphic_ninth_key() {
         with_dispatch_chain_options(0, || {
+            assert_eq!(crate::profile::DISTRIBUTION_SIZE, 8);
             eval("
                 class DispatchBudgetTarget
                   def m0(x) = x + 0
@@ -544,10 +1092,46 @@ mod hir_opt_tests {
                   end
                 end
             ");
-            let snapshots = ["dispatch_eight_names", "dispatch_nine_names", "dispatch_eight_pairs", "dispatch_nine_pairs"].map(|method| {
+            // The pair cases keep the receiver profile polymorphic (four classes).
+            // It is the ninth correlated key, not a megamorphic receiver, that
+            // must prevent dispatch specialization in every existing receiver arm.
+            let mut snapshots = Vec::new();
+            for (method, megamorphic) in [
+                ("dispatch_eight_names", false),
+                ("dispatch_nine_names", true),
+                ("dispatch_eight_pairs", false),
+                ("dispatch_nine_pairs", true),
+            ] {
                 let function = dispatch_chain_hir(method);
-                hir_string_with_selector_names(&function, &["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8"])
-            });
+                let summary = dispatch_chain_profile(&function);
+                assert_eq!(summary.is_megamorphic(), megamorphic, "{method}: {summary:?}");
+                assert_eq!(summary.buckets().iter().filter(|key| !key.receiver.is_empty()).count(), 8);
+                let leaves: Vec<_> = dispatch_chain_insns(&function).filter_map(|insn| match insn {
+                    Insn::SendDirect(data) => Some((function.type_of(data.recv).exact_ruby_class(), unsafe { (*data.cme).called_id })),
+                    _ => None,
+                }).collect();
+                assert_eq!(leaves.len(), if megamorphic { 0 } else { 8 }, "{method}: {}", hir_string_function(&function));
+                for (index, leaf) in leaves.iter().enumerate() {
+                    assert!(!leaves[..index].contains(leaf), "duplicate receiver/name leaf in {method}");
+                }
+                assert!(dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::Send { .. })));
+                if megamorphic {
+                    assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn,
+                        Insn::SendNameId { .. } | Insn::Send { reason: SendFallbackReason::SendDispatchFallback, .. }
+                    )), "a rejected megamorphic chain must not leave partial dispatch work");
+                } else {
+                    assert!(summary.is_polymorphic());
+                    assert!(dispatch_chain_insns(&function).any(|insn| matches!(insn,
+                        Insn::Send { reason: SendFallbackReason::SendDispatchFallback, .. }
+                    )));
+                    for leaf in &leaves {
+                        assert!(summary.buckets().iter().any(|key|
+                            Some(key.receiver.class()) == leaf.0 && key.name == leaf.1
+                        ), "a direct leaf must correspond to an observed pair");
+                    }
+                }
+                snapshots.push(hir_string_with_selector_names(&function, &["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8"]));
+            }
             assert_snapshot!(snapshots.join("\n"), @"
             fn dispatch_eight_names@<compiled>:16:
             bb1():
@@ -566,10 +1150,125 @@ mod hir_opt_tests {
               v11:BasicObject = LoadArg :x@3
               Jump bb3(v8, v9, v10, v11)
             bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
-              v23:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+              v32:CUInt64 = SendNameId v15
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTarget], bb8(), bb7()
+            bb8():
+              v34:CUInt64[ID(:m0)] = Const CUInt64(ID(:m0))
+              v35:CBool = IsBitEqual v32, v34
+              CondBranch v35, bb6(), bb7()
+            bb6():
+              v38:ObjectSubclass[class_exact:DispatchBudgetTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTarget]
+              PatchPoint NoSingletonClass(DispatchBudgetTarget@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x1008, m0@0x1040, cme:0x1048)
+              v45:BasicObject = SendDirect v38, 0x0, :m0 (0x1070), v16
+              Jump bb4(v45)
+            bb7():
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTarget], bb11(), bb10()
+            bb11():
+              v48:CUInt64[ID(:m2)] = Const CUInt64(ID(:m2))
+              v49:CBool = IsBitEqual v32, v48
+              CondBranch v49, bb9(), bb10()
+            bb9():
+              v52:ObjectSubclass[class_exact:DispatchBudgetTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTarget]
+              PatchPoint NoSingletonClass(DispatchBudgetTarget@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x1008, m2@0x1090, cme:0x1098)
+              v59:BasicObject = SendDirect v52, 0x0, :m2 (0x10c0), v16
+              Jump bb4(v59)
+            bb10():
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTarget], bb14(), bb13()
+            bb14():
+              v62:CUInt64[ID(:m3)] = Const CUInt64(ID(:m3))
+              v63:CBool = IsBitEqual v32, v62
+              CondBranch v63, bb12(), bb13()
+            bb12():
+              v66:ObjectSubclass[class_exact:DispatchBudgetTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTarget]
+              PatchPoint NoSingletonClass(DispatchBudgetTarget@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x1008, m3@0x10e0, cme:0x10e8)
+              v73:BasicObject = SendDirect v66, 0x0, :m3 (0x1110), v16
+              Jump bb4(v73)
+            bb13():
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTarget], bb17(), bb16()
+            bb17():
+              v76:CUInt64[ID(:m4)] = Const CUInt64(ID(:m4))
+              v77:CBool = IsBitEqual v32, v76
+              CondBranch v77, bb15(), bb16()
+            bb15():
+              v80:ObjectSubclass[class_exact:DispatchBudgetTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTarget]
+              PatchPoint NoSingletonClass(DispatchBudgetTarget@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x1008, m4@0x1130, cme:0x1138)
+              v87:BasicObject = SendDirect v80, 0x0, :m4 (0x1160), v16
+              Jump bb4(v87)
+            bb16():
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTarget], bb20(), bb19()
+            bb20():
+              v90:CUInt64[ID(:m5)] = Const CUInt64(ID(:m5))
+              v91:CBool = IsBitEqual v32, v90
+              CondBranch v91, bb18(), bb19()
+            bb18():
+              v94:ObjectSubclass[class_exact:DispatchBudgetTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTarget]
+              PatchPoint NoSingletonClass(DispatchBudgetTarget@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x1008, m5@0x1180, cme:0x1188)
+              v101:BasicObject = SendDirect v94, 0x0, :m5 (0x11b0), v16
+              Jump bb4(v101)
+            bb19():
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTarget], bb23(), bb22()
+            bb23():
+              v104:CUInt64[ID(:m6)] = Const CUInt64(ID(:m6))
+              v105:CBool = IsBitEqual v32, v104
+              CondBranch v105, bb21(), bb22()
+            bb21():
+              v108:ObjectSubclass[class_exact:DispatchBudgetTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTarget]
+              PatchPoint NoSingletonClass(DispatchBudgetTarget@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x1008, m6@0x11d0, cme:0x11d8)
+              v115:BasicObject = SendDirect v108, 0x0, :m6 (0x1200), v16
+              Jump bb4(v115)
+            bb22():
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTarget], bb26(), bb25()
+            bb26():
+              v118:CUInt64[ID(:m7)] = Const CUInt64(ID(:m7))
+              v119:CBool = IsBitEqual v32, v118
+              CondBranch v119, bb24(), bb25()
+            bb24():
+              v122:ObjectSubclass[class_exact:DispatchBudgetTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTarget]
+              PatchPoint NoSingletonClass(DispatchBudgetTarget@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x1008, m7@0x1220, cme:0x1228)
+              v129:BasicObject = SendDirect v122, 0x0, :m7 (0x1250), v16
+              Jump bb4(v129)
+            bb25():
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTarget], bb28(), bb5()
+            bb28():
+              v132:CUInt64[ID(:m1)] = Const CUInt64(ID(:m1))
+              v133:CBool = IsBitEqual v32, v132
+              CondBranch v133, bb27(), bb5()
+            bb27():
+              v136:ObjectSubclass[class_exact:DispatchBudgetTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTarget]
+              PatchPoint NoSingletonClass(DispatchBudgetTarget@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x1008, m1@0x1270, cme:0x1278)
+              v143:BasicObject = SendDirect v136, 0x0, :m1 (0x12a0), v16
+              Jump bb4(v143)
+            bb5():
+              v145:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb4(v145)
+            bb4(v31:BasicObject):
               PatchPoint NoEPEscape(dispatch_eight_names)
               CheckInterrupts
-              Return v23
+              Return v31
 
             fn dispatch_nine_names@<compiled>:17:
             bb1():
@@ -613,26 +1312,126 @@ mod hir_opt_tests {
               CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTargetB], bb6(), bb7()
             bb6():
               v26:ObjectSubclass[class_exact:DispatchBudgetTargetB] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTargetB]
-              v27:BasicObject = Send v26, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
-              Jump bb4(v27)
+              v54:CUInt64 = SendNameId v15
+              v55:CUInt64[ID(:m0)] = Const CUInt64(ID(:m0))
+              v56:CBool = IsBitEqual v54, v55
+              CondBranch v56, bb15(), bb16()
+            bb15():
+              PatchPoint NoSingletonClass(DispatchBudgetTargetB@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchBudgetTargetB@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchBudgetTargetB@0x1008, m0@0x1040, cme:0x1048)
+              v66:BasicObject = SendDirect v26, 0x0, :m0 (0x1070), v16
+              Jump bb13(v66)
+            bb16():
+              v68:CUInt64[ID(:m1)] = Const CUInt64(ID(:m1))
+              v69:CBool = IsBitEqual v54, v68
+              CondBranch v69, bb17(), bb14()
+            bb17():
+              PatchPoint NoSingletonClass(DispatchBudgetTargetB@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchBudgetTargetB@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchBudgetTargetB@0x1008, m1@0x1090, cme:0x1098)
+              v79:BasicObject = SendDirect v26, 0x0, :m1 (0x10c0), v16
+              Jump bb13(v79)
+            bb14():
+              v81:BasicObject = Send v26, :__send__, v15, v16 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb13(v81)
+            bb13(v53:BasicObject):
+              Jump bb4(v53)
             bb7():
               CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTargetA], bb8(), bb9()
             bb8():
               v31:ObjectSubclass[class_exact:DispatchBudgetTargetA] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTargetA]
-              v32:BasicObject = Send v31, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
-              Jump bb4(v32)
+              v84:CUInt64 = SendNameId v15
+              v85:CUInt64[ID(:m0)] = Const CUInt64(ID(:m0))
+              v86:CBool = IsBitEqual v84, v85
+              CondBranch v86, bb20(), bb21()
+            bb20():
+              PatchPoint NoSingletonClass(DispatchBudgetTargetA@0x10e0)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchBudgetTargetA@0x10e0, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchBudgetTargetA@0x10e0, m0@0x1040, cme:0x1048)
+              v96:BasicObject = SendDirect v31, 0x0, :m0 (0x1070), v16
+              Jump bb18(v96)
+            bb21():
+              v98:CUInt64[ID(:m1)] = Const CUInt64(ID(:m1))
+              v99:CBool = IsBitEqual v84, v98
+              CondBranch v99, bb22(), bb19()
+            bb22():
+              PatchPoint NoSingletonClass(DispatchBudgetTargetA@0x10e0)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchBudgetTargetA@0x10e0, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchBudgetTargetA@0x10e0, m1@0x1090, cme:0x1098)
+              v109:BasicObject = SendDirect v31, 0x0, :m1 (0x10c0), v16
+              Jump bb18(v109)
+            bb19():
+              v111:BasicObject = Send v31, :__send__, v15, v16 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb18(v111)
+            bb18(v83:BasicObject):
+              Jump bb4(v83)
             bb9():
               CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTargetC], bb10(), bb11()
             bb10():
               v36:ObjectSubclass[class_exact:DispatchBudgetTargetC] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTargetC]
-              v37:BasicObject = Send v36, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
-              Jump bb4(v37)
+              v114:CUInt64 = SendNameId v15
+              v115:CUInt64[ID(:m0)] = Const CUInt64(ID(:m0))
+              v116:CBool = IsBitEqual v114, v115
+              CondBranch v116, bb25(), bb26()
+            bb25():
+              PatchPoint NoSingletonClass(DispatchBudgetTargetC@0x10e8)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchBudgetTargetC@0x10e8, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchBudgetTargetC@0x10e8, m0@0x1040, cme:0x1048)
+              v126:BasicObject = SendDirect v36, 0x0, :m0 (0x1070), v16
+              Jump bb23(v126)
+            bb26():
+              v128:CUInt64[ID(:m1)] = Const CUInt64(ID(:m1))
+              v129:CBool = IsBitEqual v114, v128
+              CondBranch v129, bb27(), bb24()
+            bb27():
+              PatchPoint NoSingletonClass(DispatchBudgetTargetC@0x10e8)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchBudgetTargetC@0x10e8, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchBudgetTargetC@0x10e8, m1@0x1090, cme:0x1098)
+              v139:BasicObject = SendDirect v36, 0x0, :m1 (0x10c0), v16
+              Jump bb23(v139)
+            bb24():
+              v141:BasicObject = Send v36, :__send__, v15, v16 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb23(v141)
+            bb23(v113:BasicObject):
+              Jump bb4(v113)
             bb11():
               CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTarget], bb12(), bb5()
             bb12():
               v41:ObjectSubclass[class_exact:DispatchBudgetTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTarget]
-              v42:BasicObject = Send v41, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
-              Jump bb4(v42)
+              v144:CUInt64 = SendNameId v15
+              v145:CUInt64[ID(:m0)] = Const CUInt64(ID(:m0))
+              v146:CBool = IsBitEqual v144, v145
+              CondBranch v146, bb30(), bb31()
+            bb30():
+              PatchPoint NoSingletonClass(DispatchBudgetTarget@0x10f0)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x10f0, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x10f0, m0@0x1040, cme:0x1048)
+              v156:BasicObject = SendDirect v41, 0x0, :m0 (0x1070), v16
+              Jump bb28(v156)
+            bb31():
+              v158:CUInt64[ID(:m1)] = Const CUInt64(ID(:m1))
+              v159:CBool = IsBitEqual v144, v158
+              CondBranch v159, bb32(), bb29()
+            bb32():
+              PatchPoint NoSingletonClass(DispatchBudgetTarget@0x10f0)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x10f0, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchBudgetTarget@0x10f0, m1@0x1090, cme:0x1098)
+              v169:BasicObject = SendDirect v41, 0x0, :m1 (0x10c0), v16
+              Jump bb28(v169)
+            bb29():
+              v171:BasicObject = Send v41, :__send__, v15, v16 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb28(v171)
+            bb28(v143:BasicObject):
+              Jump bb4(v143)
             bb5():
               v44:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: polymorphic fallback
               Jump bb4(v44)
@@ -729,14 +1528,45 @@ mod hir_opt_tests {
                 end
             ");
             let helper = dispatch_chain_hir("dispatch_constant_helper");
+            let summary = dispatch_chain_profile(&helper);
+            assert!(summary.is_megamorphic());
+            let helper_iseq = get_method_iseq("self", "dispatch_constant_helper");
             let mut snapshots = vec![hir_string_function(&helper)];
             let old_max_iterations = get_option!(inline_max_iterations);
             unsafe { OPTIONS.as_mut().unwrap().inline_max_iterations = 1; }
-            for caller in [
-                "dispatch_constant_inc", "dispatch_constant_dec",
-                "dispatch_constant_frozen_inc", "dispatch_constant_frozen_dec",
+            for (caller, target) in [
+                ("dispatch_constant_inc", "inc"), ("dispatch_constant_dec", "dec"),
+                ("dispatch_constant_frozen_inc", "inc"), ("dispatch_constant_frozen_dec", "dec"),
             ] {
+                let target_id = unsafe { rb_get_symbol_id(eval(&format!(":{target}"))) };
+                let target_iseq = get_method_iseq("DISPATCH_CONSTANT_TARGET", target);
+                assert!(!summary.buckets().iter().any(|key| key.name == target_id),
+                    "the caller's constant must work even when absent from the shared profile");
                 let function = dispatch_chain_hir(caller);
+                assert!(dispatch_chain_insns(&function).any(|insn| matches!(insn,
+                    Insn::PushInlineFrame { iseq, .. } if *iseq == helper_iseq
+                )), "the shared helper must actually be inlined");
+                let leaves: Vec<_> = dispatch_chain_insns(&function).filter_map(|insn| match insn {
+                    Insn::SendDirect(data) => Some(data),
+                    _ => None,
+                }).collect();
+                assert_eq!(leaves.len(), 1, "{}", hir_string_function(&function));
+                assert_eq!(leaves[0].iseq, target_iseq);
+                assert_eq!(unsafe { (*leaves[0].cme).called_id }, target_id);
+                let exit = function.frame_state(leaves[0].exit_state);
+                assert_eq!(exit.iseq, helper_iseq, "the call belongs to the inlined helper");
+                assert_eq!(exit.depth, 1);
+                assert!(exit.caller().is_some());
+                assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn,
+                    Insn::SendNameId { .. } | Insn::IsBitEqual { .. } | Insn::CondBranchHasType(_)
+                )), "known receiver and immutable selector must not need a selector or class dispatch: {}", hir_string_function(&function));
+                // Constant guards may fold away the generic tail altogether.
+                // If it survives, it must remain a terminal fallback, not turn
+                // into a new speculative Send on the next optimization pass.
+                assert!(dispatch_chain_insns(&function).all(|insn| match insn {
+                    Insn::Send { reason, .. } => *reason == SendFallbackReason::SendDispatchFallback,
+                    _ => true,
+                }));
                 snapshots.push(hir_string_function(&function));
             }
             unsafe { OPTIONS.as_mut().unwrap().inline_max_iterations = old_max_iterations; }
@@ -784,12 +1614,16 @@ mod hir_opt_tests {
               PatchPoint MethodRedefined(Object@0x1020, dispatch_constant_helper@0x1028, cme:0x1030)
               v33:ObjectSubclass[class_exact*:Object@VALUE(0x1020)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1020)] recompile
               PushInlineFrame :dispatch_constant_helper, v33 (0x1058), num_args=3
-              v46:BasicObject = Send v17, :__send__, v21, v10 # SendFallbackReason: Send: unsupported optimized method type Send
+              PatchPoint NoSingletonClass(DispatchConstantTarget@0x1078)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchConstantTarget@0x1078, __send__@0x1080, cme:0x1088)
+              PatchPoint MethodRedefined(DispatchConstantTarget@0x1078, inc@0x10b0, cme:0x10b8)
+              v66:BasicObject = SendDirect v17, 0x0, :inc (0x10e0), v10
               PatchPoint NoEPEscape(dispatch_constant_helper)
               PopInlineFrame
               PatchPoint NoEPEscape(dispatch_constant_inc)
               CheckInterrupts
-              Return v46
+              Return v66
 
             fn dispatch_constant_dec@<compiled>:20:
             bb1():
@@ -812,12 +1646,16 @@ mod hir_opt_tests {
               PatchPoint MethodRedefined(Object@0x1020, dispatch_constant_helper@0x1028, cme:0x1030)
               v33:ObjectSubclass[class_exact*:Object@VALUE(0x1020)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1020)] recompile
               PushInlineFrame :dispatch_constant_helper, v33 (0x1058), num_args=3
-              v46:BasicObject = Send v17, :__send__, v21, v10 # SendFallbackReason: Send: unsupported optimized method type Send
+              PatchPoint NoSingletonClass(DispatchConstantTarget@0x1078)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchConstantTarget@0x1078, __send__@0x1080, cme:0x1088)
+              PatchPoint MethodRedefined(DispatchConstantTarget@0x1078, dec@0x10b0, cme:0x10b8)
+              v66:BasicObject = SendDirect v17, 0x0, :dec (0x10e0), v10
               PatchPoint NoEPEscape(dispatch_constant_helper)
               PopInlineFrame
               PatchPoint NoEPEscape(dispatch_constant_dec)
               CheckInterrupts
-              Return v46
+              Return v66
 
             fn dispatch_constant_frozen_inc@<compiled>:27:
             bb1():
@@ -841,12 +1679,16 @@ mod hir_opt_tests {
               PatchPoint MethodRedefined(Object@0x1028, dispatch_constant_helper@0x1030, cme:0x1038)
               v36:ObjectSubclass[class_exact*:Object@VALUE(0x1028)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1028)] recompile
               PushInlineFrame :dispatch_constant_helper, v36 (0x1060), num_args=3
-              v49:BasicObject = Send v17, :__send__, v22, v10 # SendFallbackReason: Send: unsupported optimized method type Send
+              PatchPoint NoSingletonClass(DispatchConstantTarget@0x1080)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchConstantTarget@0x1080, __send__@0x1088, cme:0x1090)
+              PatchPoint MethodRedefined(DispatchConstantTarget@0x1080, inc@0x10b8, cme:0x10c0)
+              v69:BasicObject = SendDirect v17, 0x0, :inc (0x10e8), v10
               PatchPoint NoEPEscape(dispatch_constant_helper)
               PopInlineFrame
               PatchPoint NoEPEscape(dispatch_constant_frozen_inc)
               CheckInterrupts
-              Return v49
+              Return v69
 
             fn dispatch_constant_frozen_dec@<compiled>:28:
             bb1():
@@ -870,12 +1712,16 @@ mod hir_opt_tests {
               PatchPoint MethodRedefined(Object@0x1028, dispatch_constant_helper@0x1030, cme:0x1038)
               v36:ObjectSubclass[class_exact*:Object@VALUE(0x1028)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1028)] recompile
               PushInlineFrame :dispatch_constant_helper, v36 (0x1060), num_args=3
-              v49:BasicObject = Send v17, :__send__, v22, v10 # SendFallbackReason: Send: unsupported optimized method type Send
+              PatchPoint NoSingletonClass(DispatchConstantTarget@0x1080)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchConstantTarget@0x1080, __send__@0x1088, cme:0x1090)
+              PatchPoint MethodRedefined(DispatchConstantTarget@0x1080, dec@0x10b8, cme:0x10c0)
+              v69:BasicObject = SendDirect v17, 0x0, :dec (0x10e8), v10
               PatchPoint NoEPEscape(dispatch_constant_helper)
               PopInlineFrame
               PatchPoint NoEPEscape(dispatch_constant_frozen_dec)
               CheckInterrupts
-              Return v49
+              Return v69
             ");
         });
     }
@@ -892,10 +1738,77 @@ mod hir_opt_tests {
                 o = DispatchSnapshotTarget.new
                 128.times { |i| dispatch_snapshot(o, i.even? ? :inc : :dec, 10, nil) }
             ");
+            let target_iseqs = [
+                get_method_iseq("DispatchSnapshotTarget.new", "inc"),
+                get_method_iseq("DispatchSnapshotTarget.new", "dec"),
+            ];
+            let entry = get_method_iseq("self", "dispatch_snapshot");
             let mut snapshots = Vec::new();
             for threshold in [0, 100] {
                 set_inline_threshold(threshold);
                 let function = dispatch_chain_hir("dispatch_snapshot");
+                let calls: Vec<_> = dispatch_chain_insns(&function).filter_map(|insn| match insn {
+                    Insn::SendDirect(data) if target_iseqs.contains(&data.iseq) => {
+                        assert_eq!(threshold, 0, "targets should inline when enabled");
+                        assert_eq!(data.args.len(), 1);
+                        assert_eq!(data.block, None);
+                        Some((data.iseq, data.state, data.exit_state))
+                    }
+                    Insn::PushInlineFrame { iseq, state, exit_state, num_args, .. } if target_iseqs.contains(iseq) => {
+                        assert_ne!(threshold, 0);
+                        assert_eq!(*num_args, 1);
+                        Some((*iseq, *state, *exit_state))
+                    }
+                    _ => None,
+                }).collect();
+                assert_eq!(calls.len(), 2, "{}", hir_string_function(&function));
+                for &target in &target_iseqs {
+                    assert_eq!(calls.iter().filter(|call| call.0 == target).count(), 1);
+                }
+                for &(_, state, exit_state) in &calls {
+                    let normalized = function.frame_state(state);
+                    let original = function.frame_state(exit_state);
+                    let original_stack: Vec<_> = original.stack().copied().collect();
+                    let normalized_stack: Vec<_> = normalized.stack().copied().collect();
+                    let locals: Vec<_> = original.locals().copied().collect();
+                    assert_eq!(original.iseq, entry);
+                    assert_eq!(normalized.iseq, entry);
+                    assert_eq!(original.pc, normalized.pc);
+                    assert_eq!(original.insn_idx(), normalized.insn_idx());
+                    assert_eq!(original_stack.len(), 4, "original [receiver, selector, x, blockarg]");
+                    assert_eq!(normalized_stack.len(), 2, "normalized [receiver, x]");
+                    assert_eq!(&original_stack[1..], &locals[1..4]);
+                    assert_eq!(normalized_stack[1], original_stack[2]);
+                    assert!(!normalized_stack.contains(&original_stack[1]));
+                    assert!(!normalized_stack.contains(&original_stack[3]));
+                }
+                let block_guard_states: Vec<_> = dispatch_chain_insns(&function).filter_map(|insn| match insn {
+                    Insn::GuardBitEquals { expected: Const::Value(value), state, .. }
+                        if *value == Qnil && function.frame_state_iseq(*state) == entry => Some(*state),
+                    _ => None,
+                }).collect();
+                assert!(!block_guard_states.is_empty(), "the profiled nil blockarg needs a pre-entry guard");
+                for state in block_guard_states {
+                    let frame = function.frame_state(state);
+                    let stack: Vec<_> = frame.stack().copied().collect();
+                    let locals: Vec<_> = frame.locals().copied().collect();
+                    assert_eq!(stack.len(), 4);
+                    assert_eq!(&stack[1..], &locals[1..4], "guard bailout must replay the original reflective call");
+                }
+                if threshold != 0 {
+                    for &target in &target_iseqs {
+                        let callers: Vec<_> = dispatch_chain_insns(&function).filter_map(|insn| match insn {
+                            Insn::Snapshot { state } if state.iseq == target => state.caller(),
+                            _ => None,
+                        }).collect();
+                        assert!(!callers.is_empty(), "inlined target must retain its own exit snapshots");
+                        for caller in callers {
+                            let frame = function.frame_state(caller);
+                            assert_eq!(frame.iseq, entry);
+                            assert_eq!(frame.stack_size(), 0, "callee exits resume after the reflective send");
+                        }
+                    }
+                }
                 snapshots.push(format!("inline_threshold={threshold}:\n{}", hir_string_with_selector_names(&function, &["inc", "dec"])));
             }
             assert_snapshot!(snapshots.join("\n"), @"
@@ -919,10 +1832,43 @@ mod hir_opt_tests {
               v13:BasicObject = LoadArg :block@4
               Jump bb3(v9, v10, v11, v12, v13)
             bb3(v15:BasicObject, v16:BasicObject, v17:BasicObject, v18:BasicObject, v19:BasicObject):
-              v27:BasicObject = Send v16, &block, :__send__, v17, v18, v19 # SendFallbackReason: Send: unsupported method type Optimized
+              v36:CUInt64 = SendNameId v17
+              CondBranchHasType v16, ObjectSubclass[class_exact:DispatchSnapshotTarget], bb8(), bb7()
+            bb8():
+              v38:CUInt64[ID(:inc)] = Const CUInt64(ID(:inc))
+              v39:CBool = IsBitEqual v36, v38
+              CondBranch v39, bb6(), bb7()
+            bb6():
+              v42:ObjectSubclass[class_exact:DispatchSnapshotTarget] = RefineType v16, ObjectSubclass[class_exact:DispatchSnapshotTarget]
+              PatchPoint NoSingletonClass(DispatchSnapshotTarget@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchSnapshotTarget@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchSnapshotTarget@0x1008, inc@0x1040, cme:0x1048)
+              v49:NilClass = GuardBitEquals v19, Value(nil) recompile
+              v51:BasicObject = SendDirect v42, 0x0, :inc (0x1070), v18
+              Jump bb4(v51)
+            bb7():
+              CondBranchHasType v16, ObjectSubclass[class_exact:DispatchSnapshotTarget], bb10(), bb5()
+            bb10():
+              v54:CUInt64[ID(:dec)] = Const CUInt64(ID(:dec))
+              v55:CBool = IsBitEqual v36, v54
+              CondBranch v55, bb9(), bb5()
+            bb9():
+              v58:ObjectSubclass[class_exact:DispatchSnapshotTarget] = RefineType v16, ObjectSubclass[class_exact:DispatchSnapshotTarget]
+              PatchPoint NoSingletonClass(DispatchSnapshotTarget@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchSnapshotTarget@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchSnapshotTarget@0x1008, dec@0x1090, cme:0x1098)
+              v65:NilClass = GuardBitEquals v19, Value(nil) recompile
+              v67:BasicObject = SendDirect v58, 0x0, :dec (0x10c0), v18
+              Jump bb4(v67)
+            bb5():
+              v69:BasicObject = Send v16, &block, :__send__, v17, v18, v19 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb4(v69)
+            bb4(v35:BasicObject):
               PatchPoint NoEPEscape(dispatch_snapshot)
               CheckInterrupts
-              Return v27
+              Return v35
 
             inline_threshold=100:
             fn dispatch_snapshot@<compiled>:6:
@@ -944,10 +1890,53 @@ mod hir_opt_tests {
               v13:BasicObject = LoadArg :block@4
               Jump bb3(v9, v10, v11, v12, v13)
             bb3(v15:BasicObject, v16:BasicObject, v17:BasicObject, v18:BasicObject, v19:BasicObject):
-              v27:BasicObject = Send v16, &block, :__send__, v17, v18, v19 # SendFallbackReason: Send: unsupported method type Optimized
+              v36:CUInt64 = SendNameId v17
+              CondBranchHasType v16, ObjectSubclass[class_exact:DispatchSnapshotTarget], bb8(), bb7()
+            bb8():
+              v38:CUInt64[ID(:inc)] = Const CUInt64(ID(:inc))
+              v39:CBool = IsBitEqual v36, v38
+              CondBranch v39, bb6(), bb7()
+            bb6():
+              v42:ObjectSubclass[class_exact:DispatchSnapshotTarget] = RefineType v16, ObjectSubclass[class_exact:DispatchSnapshotTarget]
+              PatchPoint NoSingletonClass(DispatchSnapshotTarget@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchSnapshotTarget@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchSnapshotTarget@0x1008, inc@0x1040, cme:0x1048)
+              v49:NilClass = GuardBitEquals v19, Value(nil) recompile
+              PushInlineFrame :inc, v42 (0x1070), num_args=1
+              v78:Fixnum[1] = Const Value(1)
+              PatchPoint MethodRedefined(Integer@0x1090, +@0x1098, cme:0x10a0)
+              v109:Fixnum = GuardType v18, Fixnum recompile
+              v110:Fixnum = FixnumAdd v109, v78
+              PopInlineFrame
+              Jump bb4(v110)
+            bb7():
+              CondBranchHasType v16, ObjectSubclass[class_exact:DispatchSnapshotTarget], bb10(), bb5()
+            bb10():
+              v54:CUInt64[ID(:dec)] = Const CUInt64(ID(:dec))
+              v55:CBool = IsBitEqual v36, v54
+              CondBranch v55, bb9(), bb5()
+            bb9():
+              v58:ObjectSubclass[class_exact:DispatchSnapshotTarget] = RefineType v16, ObjectSubclass[class_exact:DispatchSnapshotTarget]
+              PatchPoint NoSingletonClass(DispatchSnapshotTarget@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchSnapshotTarget@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchSnapshotTarget@0x1008, dec@0x10c8, cme:0x10d0)
+              v65:NilClass = GuardBitEquals v19, Value(nil) recompile
+              PushInlineFrame :dec, v58 (0x10f8), num_args=1
+              v96:Fixnum[1] = Const Value(1)
+              PatchPoint MethodRedefined(Integer@0x1090, -@0x1118, cme:0x1120)
+              v113:Fixnum = GuardType v18, Fixnum recompile
+              v114:Fixnum = FixnumSub v113, v96
+              PopInlineFrame
+              Jump bb4(v114)
+            bb5():
+              v69:BasicObject = Send v16, &block, :__send__, v17, v18, v19 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb4(v69)
+            bb4(v35:BasicObject):
               PatchPoint NoEPEscape(dispatch_snapshot)
               CheckInterrupts
-              Return v27
+              Return v35
             ");
         });
     }
@@ -971,9 +1960,64 @@ mod hir_opt_tests {
                   dispatch_missing_rest(rest, 10, nil)
                 end
             ");
-            let snapshots = ["dispatch_missing_fixed", "dispatch_missing_rest"].map(|method| {
-                hir_string_function(&dispatch_chain_hir(method))
-            });
+            let name = eval(":absent");
+            let name_id = unsafe { rb_get_symbol_id(name) };
+            let mut snapshots = Vec::new();
+            for (method, receiver, klass, rest) in [
+                ("dispatch_missing_fixed", "DispatchMissingFixed.new", "DispatchMissingFixed", false),
+                ("dispatch_missing_rest", "DispatchMissingRest.new", "DispatchMissingRest", true),
+            ] {
+                let handler = get_method_iseq(receiver, "method_missing");
+                let entry = get_method_iseq("self", method);
+                let function = dispatch_chain_hir(method);
+                let (block, position, call) = dispatch_chain_direct_call(&function, handler);
+                assert_dispatch_chain_missing_dependencies(&function, eval(klass), name_id, call.cme);
+                assert_eq!(ruby_call_method_id(call.cd), name_id);
+                assert_eq!(call.call_flags & (VM_CALL_FCALL | VM_CALL_OPT_SEND), VM_CALL_FCALL | VM_CALL_OPT_SEND);
+                assert_eq!(call.args.len(), 2);
+                assert_eq!(call.block, None);
+                assert!(matches!(function.find(call.args[0]), Insn::Const { val: Const::Value(value) } if value == name));
+                let reason_position = assert_dispatch_chain_reason_before_call(&function, block, position, MISSING_NOENTRY);
+
+                let original = function.frame_state(call.exit_state);
+                let normalized = function.frame_state(call.state);
+                let original_stack: Vec<_> = original.stack().copied().collect();
+                let normalized_stack: Vec<_> = normalized.stack().copied().collect();
+                let locals: Vec<_> = original.locals().copied().collect();
+                assert_eq!(original.iseq, entry);
+                assert_eq!(normalized.iseq, entry);
+                assert_eq!(original.pc, normalized.pc);
+                assert_eq!(original_stack.len(), 3, "original [receiver, x, blockarg], without an injected name");
+                assert_eq!(&original_stack[1..], &locals[1..3]);
+                assert!(!original_stack.contains(&call.args[0]));
+                assert_eq!(normalized_stack.len(), 3, "normalized [receiver, name, x/rest]");
+                assert_eq!(&normalized_stack[1..], call.args.as_slice());
+                assert!(!normalized_stack.contains(&original_stack[2]));
+
+                let guards: Vec<_> = function.blocks[block].insns[..reason_position].iter().filter_map(|&id| match function.find(id) {
+                    Insn::GuardBitEquals { expected: Const::Value(value), state, .. } if value == Qnil => Some(state),
+                    _ => None,
+                }).collect();
+                assert_eq!(guards.len(), 1, "the profiled blockarg must be guarded before setting the reason");
+                assert_eq!(function.frame_state(guards[0]).stack().copied().collect::<Vec<_>>(), original_stack);
+                if rest {
+                    let Insn::NewArray { elements, state } = function.find(call.args[1]) else {
+                        panic!("the handler's rest argument must be materialized");
+                    };
+                    assert_eq!(elements, vec![original_stack[1]]);
+                    assert_eq!(function.frame_state(state).stack().copied().collect::<Vec<_>>(), original_stack);
+                    assert!(function.blocks[block].insns[..reason_position].iter().any(|&id|
+                        function.chase_insn(id) == function.chase_insn(call.args[1])
+                    ), "rest allocation must precede the missing-call reason");
+                } else {
+                    assert_eq!(call.args[1], original_stack[1]);
+                }
+                assert!(dispatch_chain_insns(&function).all(|insn| match insn {
+                    Insn::Send { args, reason, .. } => args.len() == 2 && *reason == SendFallbackReason::SendDispatchFallback,
+                    _ => true,
+                }));
+                snapshots.push(hir_string_function(&function));
+            }
             assert_snapshot!(snapshots.join("\n"), @"
             fn dispatch_missing_fixed@<compiled>:8:
             bb1():
@@ -992,10 +2036,25 @@ mod hir_opt_tests {
               v11:BasicObject = LoadArg :block@3
               Jump bb3(v8, v9, v10, v11)
             bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
-              v23:BasicObject = Send v14, &block, :absent, v15, v16 # SendFallbackReason: Send: unsupported method type Null
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchMissingFixed], bb6(), bb5()
+            bb6():
+              v34:ObjectSubclass[class_exact:DispatchMissingFixed] = RefineType v14, ObjectSubclass[class_exact:DispatchMissingFixed]
+              PatchPoint NoSingletonClass(DispatchMissingFixed@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchMissingFixed@0x1008, absent@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchMissingFixed@0x1008, method_missing@0x1040, cme:0x1048)
+              v40:NilClass = GuardBitEquals v16, Value(nil) recompile
+              v41:StaticSymbol[:absent] = Const Value(VALUE(0x1070))
+              SetMethodMissingReason 0
+              v44:BasicObject = SendDirect v34, 0x0, :method_missing (0x1078), v41, v15
+              Jump bb4(v44)
+            bb5():
+              v46:BasicObject = Send v14, &block, :absent, v15, v16 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb4(v46)
+            bb4(v31:BasicObject):
               PatchPoint NoEPEscape(dispatch_missing_fixed)
               CheckInterrupts
-              Return v23
+              Return v31
 
             fn dispatch_missing_rest@<compiled>:9:
             bb1():
@@ -1014,10 +2073,26 @@ mod hir_opt_tests {
               v11:BasicObject = LoadArg :block@3
               Jump bb3(v8, v9, v10, v11)
             bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
-              v23:BasicObject = Send v14, &block, :absent, v15, v16 # SendFallbackReason: Send: unsupported method type Null
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchMissingRest], bb6(), bb5()
+            bb6():
+              v34:ObjectSubclass[class_exact:DispatchMissingRest] = RefineType v14, ObjectSubclass[class_exact:DispatchMissingRest]
+              PatchPoint NoSingletonClass(DispatchMissingRest@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchMissingRest@0x1008, absent@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchMissingRest@0x1008, method_missing@0x1040, cme:0x1048)
+              v40:NilClass = GuardBitEquals v16, Value(nil) recompile
+              v41:StaticSymbol[:absent] = Const Value(VALUE(0x1070))
+              v42:ArrayExact = NewArray v15
+              SetMethodMissingReason 0
+              v45:BasicObject = SendDirect v34, 0x0, :method_missing (0x1078), v41, v42
+              Jump bb4(v45)
+            bb5():
+              v47:BasicObject = Send v14, &block, :absent, v15, v16 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb4(v47)
+            bb4(v31:BasicObject):
               PatchPoint NoEPEscape(dispatch_missing_rest)
               CheckInterrupts
-              Return v23
+              Return v31
             ");
         });
     }
@@ -1040,9 +2115,52 @@ mod hir_opt_tests {
                   dispatch_missing_string_public(o, String.new('dispatch_missing_string_name'), 10, nil)
                 end
             ");
-            let snapshots = ["dispatch_missing_string_any", "dispatch_missing_string_public"].map(|method| {
-                hir_string_with_selector_names(&dispatch_chain_hir(method), &["dispatch_missing_string_name"])
-            });
+            let handler = get_method_iseq("DispatchMissingString.new", "method_missing");
+            let klass = eval("DispatchMissingString");
+            let name = eval(":dispatch_missing_string_name");
+            let name_id = unsafe { rb_get_symbol_id(name) };
+            assert_ne!(name_id, ID(0));
+            let mut snapshots = Vec::new();
+            for (method, intrinsic, reason) in [
+                ("dispatch_missing_string_any", ":__send__", MISSING_NOENTRY | MISSING_FCALL),
+                ("dispatch_missing_string_public", ":public_send", MISSING_NOENTRY),
+            ] {
+                let function = dispatch_chain_hir(method);
+                let (block, position, call) = dispatch_chain_direct_call(&function, handler);
+                assert_dispatch_chain_missing_dependencies(&function, klass, name_id, call.cme);
+                assert_dispatch_chain_reason_before_call(&function, block, position, reason);
+                let outer_id = unsafe { rb_get_symbol_id(eval(intrinsic)) };
+                assert_eq!(ruby_call_method_id(call.cd), outer_id);
+                assert!(dispatch_chain_insns(&function).any(|insn| matches!(insn,
+                    Insn::PatchPoint { invariant: Invariant::MethodRedefined { klass: guarded_class, method, .. }, .. }
+                        if *guarded_class == klass && *method == outer_id
+                )), "bypassing the intrinsic needs its own invalidation dependency");
+                assert_eq!(call.args.len(), 2);
+                assert!(matches!(function.find(call.args[0]), Insn::Const { val: Const::Value(value) } if value == name));
+                let original = function.frame_state(call.exit_state);
+                let normalized = function.frame_state(call.state);
+                let original_stack: Vec<_> = original.stack().copied().collect();
+                let normalized_stack: Vec<_> = normalized.stack().copied().collect();
+                let locals: Vec<_> = original.locals().copied().collect();
+                assert_eq!(original.pc, normalized.pc);
+                assert_eq!(original_stack.len(), 4, "original [receiver, String selector, x, blockarg]");
+                assert_eq!(&original_stack[1..], &locals[1..4]);
+                assert_eq!(normalized_stack.len(), 3, "normalized [receiver, canonical Symbol, x]");
+                assert_eq!(&normalized_stack[1..], call.args.as_slice());
+                assert_eq!(call.args[1], original_stack[2]);
+                assert!(!normalized_stack.contains(&original_stack[1]));
+                assert!(!normalized_stack.contains(&original_stack[3]));
+                assert!(dispatch_chain_insns(&function).any(|insn| matches!(insn,
+                    Insn::SendNameId { name } if *name == original_stack[1]
+                )), "a String selector must still be read at runtime");
+                let guards: Vec<_> = dispatch_chain_insns(&function).filter_map(|insn| match insn {
+                    Insn::GuardBitEquals { expected: Const::Value(value), state, .. } if *value == Qnil => Some(*state),
+                    _ => None,
+                }).collect();
+                assert_eq!(guards.len(), 1);
+                assert_eq!(function.frame_state(guards[0]).stack().copied().collect::<Vec<_>>(), original_stack);
+                snapshots.push(hir_string_with_selector_names(&function, &["dispatch_missing_string_name"]));
+            }
             assert_snapshot!(snapshots.join("\n"), @"
             fn dispatch_missing_string_any@<compiled>:5:
             bb1():
@@ -1063,10 +2181,31 @@ mod hir_opt_tests {
               v13:BasicObject = LoadArg :block@4
               Jump bb3(v9, v10, v11, v12, v13)
             bb3(v15:BasicObject, v16:BasicObject, v17:BasicObject, v18:BasicObject, v19:BasicObject):
-              v27:BasicObject = Send v16, &block, :__send__, v17, v18, v19 # SendFallbackReason: Send: unsupported method type Optimized
+              v36:CUInt64 = SendNameId v17
+              CondBranchHasType v16, ObjectSubclass[class_exact:DispatchMissingString], bb7(), bb5()
+            bb7():
+              v38:CUInt64[ID(:dispatch_missing_string_name)] = Const CUInt64(ID(:dispatch_missing_string_name))
+              v39:CBool = IsBitEqual v36, v38
+              CondBranch v39, bb6(), bb5()
+            bb6():
+              v42:ObjectSubclass[class_exact:DispatchMissingString] = RefineType v16, ObjectSubclass[class_exact:DispatchMissingString]
+              PatchPoint NoSingletonClass(DispatchMissingString@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchMissingString@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchMissingString@0x1008, dispatch_missing_string_name@0x1040, cme:0x1048)
+              PatchPoint MethodRedefined(DispatchMissingString@0x1008, method_missing@0x1070, cme:0x1078)
+              v50:NilClass = GuardBitEquals v19, Value(nil) recompile
+              v51:StaticSymbol[:dispatch_missing_string_name] = Const Value(VALUE(0x10a0))
+              SetMethodMissingReason 4
+              v54:BasicObject = SendDirect v42, 0x0, :method_missing (0x10a8), v51, v18
+              Jump bb4(v54)
+            bb5():
+              v56:BasicObject = Send v16, &block, :__send__, v17, v18, v19 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb4(v56)
+            bb4(v35:BasicObject):
               PatchPoint NoEPEscape(dispatch_missing_string_any)
               CheckInterrupts
-              Return v27
+              Return v35
 
             fn dispatch_missing_string_public@<compiled>:6:
             bb1():
@@ -1087,10 +2226,31 @@ mod hir_opt_tests {
               v13:BasicObject = LoadArg :block@4
               Jump bb3(v9, v10, v11, v12, v13)
             bb3(v15:BasicObject, v16:BasicObject, v17:BasicObject, v18:BasicObject, v19:BasicObject):
-              v27:BasicObject = Send v16, &block, :public_send, v17, v18, v19 # SendFallbackReason: Complex argument passing
+              v36:CUInt64 = SendNameId v17
+              CondBranchHasType v16, ObjectSubclass[class_exact:DispatchMissingString], bb7(), bb5()
+            bb7():
+              v38:CUInt64[ID(:dispatch_missing_string_name)] = Const CUInt64(ID(:dispatch_missing_string_name))
+              v39:CBool = IsBitEqual v36, v38
+              CondBranch v39, bb6(), bb5()
+            bb6():
+              v42:ObjectSubclass[class_exact:DispatchMissingString] = RefineType v16, ObjectSubclass[class_exact:DispatchMissingString]
+              PatchPoint NoSingletonClass(DispatchMissingString@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchMissingString@0x1008, public_send@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchMissingString@0x1008, dispatch_missing_string_name@0x1040, cme:0x1048)
+              PatchPoint MethodRedefined(DispatchMissingString@0x1008, method_missing@0x1070, cme:0x1078)
+              v50:NilClass = GuardBitEquals v19, Value(nil) recompile
+              v51:StaticSymbol[:dispatch_missing_string_name] = Const Value(VALUE(0x10a0))
+              SetMethodMissingReason 0
+              v54:BasicObject = SendDirect v42, 0x0, :method_missing (0x10a8), v51, v18
+              Jump bb4(v54)
+            bb5():
+              v56:BasicObject = Send v16, &block, :public_send, v17, v18, v19 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb4(v56)
+            bb4(v35:BasicObject):
               PatchPoint NoEPEscape(dispatch_missing_string_public)
               CheckInterrupts
-              Return v27
+              Return v35
             ");
         });
     }
@@ -1106,7 +2266,26 @@ mod hir_opt_tests {
                 o = DispatchMissingSplat.new
                 128.times { dispatch_missing_splat(o, :absent, [10]) }
             ");
+            let handler = get_method_iseq("DispatchMissingSplat.new", "method_missing");
             let function = dispatch_chain_hir("dispatch_missing_splat");
+            let (block, position, call) = dispatch_chain_direct_call(&function, handler);
+            let reason_position = assert_dispatch_chain_reason_before_call(&function, block, position, MISSING_NOENTRY | MISSING_FCALL);
+            let original = function.frame_state(call.exit_state);
+            let original_stack: Vec<_> = original.stack().copied().collect();
+            assert_eq!(original_stack.len(), 3, "original [receiver, selector, splat array]");
+            assert_eq!(call.args.len(), 2, "the handler receives a name and one expanded positional argument");
+            assert!(matches!(function.find(call.args[0]), Insn::Const { val: Const::Value(value) } if value == eval(":absent")));
+            let guards: Vec<_> = function.blocks[block].insns[..reason_position].iter().filter_map(|&id| match function.find_ref(id) {
+                Insn::GuardBitEquals { reason, state, .. }
+                    if matches!(**reason, SideExitReason::CallerSplatLengthMismatch | SideExitReason::CallerSplatRuby2Keywords) => Some((reason, *state)),
+                _ => None,
+            }).collect();
+            assert!(guards.iter().any(|(reason, _)| matches!(reason.as_ref(), SideExitReason::CallerSplatLengthMismatch)));
+            assert!(guards.iter().any(|(reason, _)| matches!(reason.as_ref(), SideExitReason::CallerSplatRuby2Keywords)));
+            for (_, state) in guards {
+                assert_eq!(function.frame_state(state).stack().copied().collect::<Vec<_>>(), original_stack,
+                    "a splat guard must not replay the injected handler call");
+            }
             assert_snapshot!(hir_string_with_selector_names(&function, &["absent"]), @"
             fn dispatch_missing_splat@<compiled>:5:
             bb1():
@@ -1127,14 +2306,98 @@ mod hir_opt_tests {
             bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
               v23:ArrayExact = ToArray v16
               PatchPoint NoEPEscape(dispatch_missing_splat)
-              v27:BasicObject = Send v14, :__send__, v15, v23 # SendFallbackReason: Send: unsupported optimized method type Send
+              v36:CUInt64 = SendNameId v15
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchMissingSplat], bb7(), bb5()
+            bb7():
+              v38:CUInt64[ID(:absent)] = Const CUInt64(ID(:absent))
+              v39:CBool = IsBitEqual v36, v38
+              CondBranch v39, bb6(), bb5()
+            bb6():
+              v42:ObjectSubclass[class_exact:DispatchMissingSplat] = RefineType v14, ObjectSubclass[class_exact:DispatchMissingSplat]
+              PatchPoint NoSingletonClass(DispatchMissingSplat@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchMissingSplat@0x1008, __send__@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchMissingSplat@0x1008, absent@0x1040, cme:0x1048)
+              PatchPoint MethodRedefined(DispatchMissingSplat@0x1008, method_missing@0x1070, cme:0x1078)
+              v50:CInt64 = ArrayLength v23
+              v51:CInt64[1] = GuardBitEquals v50, CInt64(1) recompile
+              v52:CInt64 = CCall v23, :rb_jit_ruby2_keywords_splat_p@0x10a0
+              v53:CInt64[0] = GuardBitEquals v52, CInt64(0)
+              v54:StaticSymbol[:absent] = Const Value(VALUE(0x10a8))
+              v55:CInt64[0] = Const CInt64(0)
+              v56:BasicObject = ArrayAref v23, v55
+              SetMethodMissingReason 4
+              v59:BasicObject = SendDirect v42, 0x0, :method_missing (0x10b0), v54, v56
+              Jump bb4(v59)
+            bb5():
+              v61:BasicObject = Send v14, :__send__, v15, v23 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb4(v61)
+            bb4(v35:BasicObject):
               PatchPoint NoEPEscape(dispatch_missing_splat)
               CheckInterrupts
-              Return v27
+              Return v35
             ");
         });
     }
 
+    #[track_caller]
+    fn assert_dispatch_chain_missing_proxy_inlines(function: &Function, handler: IseqPtr, target: IseqPtr, entry: IseqPtr, name: VALUE, rest: bool) {
+        for callee in [handler, target] {
+            assert!(dispatch_chain_insns(function).any(|insn| matches!(insn,
+                Insn::PushInlineFrame { iseq, .. } if *iseq == callee
+            )), "both the handler and delegated Ruby target must inline: {}", hir_string_function(function));
+            assert!(!dispatch_chain_insns(function).any(|insn| matches!(insn,
+                Insn::SendDirect(data) if data.iseq == callee
+            )));
+        }
+        assert!(dispatch_chain_insns(function).any(|insn| matches!(insn, Insn::FixnumAdd { .. })));
+        assert!(!dispatch_chain_insns(function).any(|insn| matches!(insn, Insn::SendNameId { .. })),
+            "inlining must substitute the canonical constant name into __send__");
+        assert!(dispatch_chain_insns(function).all(|insn| match insn {
+            Insn::Send { reason, .. } => *reason == SendFallbackReason::SendDispatchFallback,
+            _ => true,
+        }), "generic calls may remain only as terminal miss tails");
+        let (handler_state, handler_exit) = dispatch_chain_insns(function).find_map(|insn| match insn {
+            Insn::PushInlineFrame { iseq, state, exit_state, .. } if *iseq == handler => Some((*state, *exit_state)),
+            _ => None,
+        }).unwrap();
+        let original = function.frame_state(handler_exit);
+        let original_stack: Vec<_> = original.stack().copied().collect();
+        let normalized = function.frame_state(handler_state);
+        let normalized_stack: Vec<_> = normalized.stack().copied().collect();
+        assert_eq!(original.iseq, entry);
+        assert_eq!(original_stack.len(), 2, "pre-entry exits have only [proxy, x]");
+        assert_eq!(normalized_stack.len(), 3);
+        assert!(matches!(function.find(normalized_stack[1]), Insn::Const { val: Const::Value(value) } if value == name));
+        if rest {
+            assert!(matches!(function.find(normalized_stack[2]), Insn::NewArray { elements, .. }
+                if elements == vec![original_stack[1]]), "rest packing may survive; reflective lookup must not");
+        } else {
+            assert_eq!(normalized_stack[2], original_stack[1]);
+        }
+
+        let target_exits: Vec<_> = dispatch_chain_insns(function).filter_map(|insn| match insn {
+            Insn::GuardType { state, .. } if function.frame_state_iseq(*state) == target => Some(*state),
+            _ => None,
+        }).collect();
+        assert!(!target_exits.is_empty(), "the inlined arithmetic target must have a real guarded exit");
+        for exit in target_exits {
+            let callee = function.frame_state(exit);
+            assert_eq!(callee.iseq, target);
+            assert_eq!(callee.depth, 2);
+            let handler_parent = function.frame_state(callee.caller().unwrap());
+            assert_eq!(handler_parent.iseq, handler);
+            assert_eq!(handler_parent.depth, 1);
+            assert_eq!(handler_parent.stack_size(), 0, "target exits resume after the delegated __send__");
+            let parent_id = handler_parent.caller().unwrap();
+            assert_ne!(parent_id, handler_exit);
+            let entry_parent = function.frame_state(parent_id);
+            assert_eq!(entry_parent.iseq, entry);
+            assert_eq!(entry_parent.depth, 0);
+            assert_eq!(entry_parent.stack_size(), 0, "handler exits must not replay the outer missing call");
+            assert_eq!(entry_parent.caller(), None);
+        }
+    }
 
     #[test]
     fn test_dispatch_chain_missing_fixed_proxy_inlines_handler_and_target() {
@@ -1151,11 +2414,26 @@ mod hir_opt_tests {
                 def dispatch_missing_inline(o, x) = o.inc(x)
                 128.times { dispatch_missing_inline(DISPATCH_MISSING_INLINE_PROXY, 10) }
             ");
+            let handler = get_method_iseq("DISPATCH_MISSING_INLINE_PROXY", "method_missing");
+            let target = get_method_iseq("DispatchMissingInlineTarget.new", "inc");
+            let entry = get_method_iseq("self", "dispatch_missing_inline");
+            let name = eval(":inc");
             let old_max_iterations = get_option!(inline_max_iterations);
+            // One inlining round exposes the handler's constant name; the final
+            // dispatch pass must still turn the delegated send into a direct call.
             unsafe { OPTIONS.as_mut().unwrap().inline_max_iterations = 1; }
-            let direct_hir = hir_string_function(&dispatch_chain_hir("dispatch_missing_inline"));
+            let direct = dispatch_chain_hir("dispatch_missing_inline");
+            let (_, _, target_call) = dispatch_chain_direct_call(&direct, target);
+            assert_eq!(target_call.args.len(), 1);
+            assert_eq!(direct.frame_state(target_call.exit_state).iseq, handler);
+            assert!(dispatch_chain_insns(&direct).any(|insn| matches!(insn,
+                Insn::PushInlineFrame { iseq, .. } if *iseq == handler
+            )), "the constant selector must come from normal handler inlining");
             unsafe { OPTIONS.as_mut().unwrap().inline_max_iterations = old_max_iterations; }
+            let direct_hir = hir_string_function(&direct);
+
             let function = dispatch_chain_hir("dispatch_missing_inline");
+            assert_dispatch_chain_missing_proxy_inlines(&function, handler, target, entry, name, false);
             format!("After one inlining round:\n{direct_hir}\nAfter full optimization:\n{}", hir_string_function(&function))
         });
         assert_snapshot!(hir, @"
@@ -1175,10 +2453,43 @@ mod hir_opt_tests {
           v9:BasicObject = LoadArg :x@2
           Jump bb3(v7, v8, v9)
         bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
-          v19:BasicObject = Send v12, :inc, v13 # SendFallbackReason: Send: unsupported method type Null
+          CondBranchHasType v12, ObjectSubclass[class_exact:DispatchMissingInlineProxy], bb6(), bb5()
+        bb6():
+          v30:ObjectSubclass[class_exact:DispatchMissingInlineProxy] = RefineType v12, ObjectSubclass[class_exact:DispatchMissingInlineProxy]
+          PatchPoint NoSingletonClass(DispatchMissingInlineProxy@0x1008)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchMissingInlineProxy@0x1008, inc@0x1010, cme:0x1018)
+          PatchPoint MethodRedefined(DispatchMissingInlineProxy@0x1008, method_missing@0x1040, cme:0x1048)
+          v36:StaticSymbol[:inc] = Const Value(VALUE(0x1070))
+          SetMethodMissingReason 0
+          PushInlineFrame :method_missing, v30 (0x1078), num_args=2
+          v51:CShape = LoadField v30, :shape_id@0x1098
+          v52:CShape[0x1099] = GuardBitEquals v51, CShape(0x1099) recompile
+          v53:BasicObject = LoadField v30, :@target@0x109a
+          PatchPoint NoEPEscape(method_missing)
+          CondBranchHasType v53, ObjectSubclass[class_exact:DispatchMissingInlineTarget], bb11(), bb10()
+        bb11():
+          v72:ObjectSubclass[class_exact:DispatchMissingInlineTarget] = RefineType v53, ObjectSubclass[class_exact:DispatchMissingInlineTarget]
+          PatchPoint NoSingletonClass(DispatchMissingInlineTarget@0x10a0)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchMissingInlineTarget@0x10a0, __send__@0x10a8, cme:0x10b0)
+          PatchPoint MethodRedefined(DispatchMissingInlineTarget@0x10a0, inc@0x1010, cme:0x10d8)
+          v79:BasicObject = SendDirect v72, 0x0, :inc (0x1100), v13
+          Jump bb9(v79)
+        bb10():
+          v81:BasicObject = Send v53, :__send__, v36, v13 # SendFallbackReason: Send: dispatch chain fallback
+          Jump bb9(v81)
+        bb9(v69:BasicObject):
+          PatchPoint NoEPEscape(method_missing)
+          PopInlineFrame
+          Jump bb4(v69)
+        bb5():
+          v41:BasicObject = Send v12, :inc, v13 # SendFallbackReason: Send: dispatch chain fallback
+          Jump bb4(v41)
+        bb4(v27:BasicObject):
           PatchPoint NoEPEscape(dispatch_missing_inline)
           CheckInterrupts
-          Return v19
+          Return v27
 
         After full optimization:
         fn dispatch_missing_inline@<compiled>:10:
@@ -1196,10 +2507,48 @@ mod hir_opt_tests {
           v9:BasicObject = LoadArg :x@2
           Jump bb3(v7, v8, v9)
         bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
-          v19:BasicObject = Send v12, :inc, v13 # SendFallbackReason: Send: unsupported method type Null
+          CondBranchHasType v12, ObjectSubclass[class_exact:DispatchMissingInlineProxy], bb6(), bb5()
+        bb6():
+          v30:ObjectSubclass[class_exact:DispatchMissingInlineProxy] = RefineType v12, ObjectSubclass[class_exact:DispatchMissingInlineProxy]
+          PatchPoint NoSingletonClass(DispatchMissingInlineProxy@0x1008)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchMissingInlineProxy@0x1008, inc@0x1010, cme:0x1018)
+          PatchPoint MethodRedefined(DispatchMissingInlineProxy@0x1008, method_missing@0x1040, cme:0x1048)
+          v36:StaticSymbol[:inc] = Const Value(VALUE(0x1070))
+          SetMethodMissingReason 0
+          PushInlineFrame :method_missing, v30 (0x1078), num_args=2
+          v51:CShape = LoadField v30, :shape_id@0x1098
+          v52:CShape[0x1099] = GuardBitEquals v51, CShape(0x1099) recompile
+          v53:BasicObject = LoadField v30, :@target@0x109a
+          PatchPoint NoEPEscape(method_missing)
+          CondBranchHasType v53, ObjectSubclass[class_exact:DispatchMissingInlineTarget], bb11(), bb10()
+        bb11():
+          v72:ObjectSubclass[class_exact:DispatchMissingInlineTarget] = RefineType v53, ObjectSubclass[class_exact:DispatchMissingInlineTarget]
+          PatchPoint NoSingletonClass(DispatchMissingInlineTarget@0x10a0)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchMissingInlineTarget@0x10a0, __send__@0x10a8, cme:0x10b0)
+          PatchPoint MethodRedefined(DispatchMissingInlineTarget@0x10a0, inc@0x1010, cme:0x10d8)
+          PushInlineFrame :inc, v72 (0x1100), num_args=1
+          v90:Fixnum[1] = Const Value(1)
+          PatchPoint MethodRedefined(Integer@0x1120, +@0x1128, cme:0x1130)
+          v103:Fixnum = GuardType v13, Fixnum recompile
+          v104:Fixnum = FixnumAdd v103, v90
+          PopInlineFrame
+          Jump bb9(v104)
+        bb10():
+          v81:BasicObject = Send v53, :__send__, v36, v13 # SendFallbackReason: Send: dispatch chain fallback
+          Jump bb9(v81)
+        bb9(v69:BasicObject):
+          PatchPoint NoEPEscape(method_missing)
+          PopInlineFrame
+          Jump bb4(v69)
+        bb5():
+          v41:BasicObject = Send v12, :inc, v13 # SendFallbackReason: Send: dispatch chain fallback
+          Jump bb4(v41)
+        bb4(v27:BasicObject):
           PatchPoint NoEPEscape(dispatch_missing_inline)
           CheckInterrupts
-          Return v19
+          Return v27
         ");
     }
 
@@ -1218,11 +2567,26 @@ mod hir_opt_tests {
                 def dispatch_missing_inline(o, x) = o.inc(x)
                 128.times { dispatch_missing_inline(DISPATCH_MISSING_INLINE_PROXY, 10) }
             ");
+            let handler = get_method_iseq("DISPATCH_MISSING_INLINE_PROXY", "method_missing");
+            let target = get_method_iseq("DispatchMissingInlineTarget.new", "inc");
+            let entry = get_method_iseq("self", "dispatch_missing_inline");
+            let name = eval(":inc");
             let old_max_iterations = get_option!(inline_max_iterations);
+            // One inlining round exposes the handler's constant name; the final
+            // dispatch pass must still turn the delegated send into a direct call.
             unsafe { OPTIONS.as_mut().unwrap().inline_max_iterations = 1; }
-            let direct_hir = hir_string_function(&dispatch_chain_hir("dispatch_missing_inline"));
+            let direct = dispatch_chain_hir("dispatch_missing_inline");
+            let (_, _, target_call) = dispatch_chain_direct_call(&direct, target);
+            assert_eq!(target_call.args.len(), 1);
+            assert_eq!(direct.frame_state(target_call.exit_state).iseq, handler);
+            assert!(dispatch_chain_insns(&direct).any(|insn| matches!(insn,
+                Insn::PushInlineFrame { iseq, .. } if *iseq == handler
+            )), "the constant selector must come from normal handler inlining");
             unsafe { OPTIONS.as_mut().unwrap().inline_max_iterations = old_max_iterations; }
+            let direct_hir = hir_string_function(&direct);
+
             let function = dispatch_chain_hir("dispatch_missing_inline");
+            assert_dispatch_chain_missing_proxy_inlines(&function, handler, target, entry, name, true);
             format!("After one inlining round:\n{direct_hir}\nAfter full optimization:\n{}", hir_string_function(&function))
         });
         assert_snapshot!(hir, @"
@@ -1242,10 +2606,52 @@ mod hir_opt_tests {
           v9:BasicObject = LoadArg :x@2
           Jump bb3(v7, v8, v9)
         bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
-          v19:BasicObject = Send v12, :inc, v13 # SendFallbackReason: Send: unsupported method type Null
+          CondBranchHasType v12, ObjectSubclass[class_exact:DispatchMissingInlineProxy], bb6(), bb5()
+        bb6():
+          v30:ObjectSubclass[class_exact:DispatchMissingInlineProxy] = RefineType v12, ObjectSubclass[class_exact:DispatchMissingInlineProxy]
+          PatchPoint NoSingletonClass(DispatchMissingInlineProxy@0x1008)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchMissingInlineProxy@0x1008, inc@0x1010, cme:0x1018)
+          PatchPoint MethodRedefined(DispatchMissingInlineProxy@0x1008, method_missing@0x1040, cme:0x1048)
+          v36:StaticSymbol[:inc] = Const Value(VALUE(0x1070))
+          v37:ArrayExact = NewArray v13
+          SetMethodMissingReason 0
+          PushInlineFrame :method_missing, v30 (0x1078), num_args=2
+          v52:CShape = LoadField v30, :shape_id@0x1098
+          v53:CShape[0x1099] = GuardBitEquals v52, CShape(0x1099) recompile
+          v54:BasicObject = LoadField v30, :@target@0x109a
+          PatchPoint NoEPEscape(method_missing)
+          v60:ArrayExact = ToArray v37
+          PatchPoint NoEPEscape(method_missing)
+          CondBranchHasType v54, ObjectSubclass[class_exact:DispatchMissingInlineTarget], bb11(), bb10()
+        bb11():
+          v77:ObjectSubclass[class_exact:DispatchMissingInlineTarget] = RefineType v54, ObjectSubclass[class_exact:DispatchMissingInlineTarget]
+          PatchPoint NoSingletonClass(DispatchMissingInlineTarget@0x10a0)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchMissingInlineTarget@0x10a0, __send__@0x10a8, cme:0x10b0)
+          PatchPoint MethodRedefined(DispatchMissingInlineTarget@0x10a0, inc@0x1010, cme:0x10d8)
+          v84:CInt64 = ArrayLength v60
+          v85:CInt64[1] = GuardBitEquals v84, CInt64(1) recompile
+          v86:CInt64 = CCall v60, :rb_jit_ruby2_keywords_splat_p@0x1100
+          v87:CInt64[0] = GuardBitEquals v86, CInt64(0)
+          v88:CInt64[0] = Const CInt64(0)
+          v89:BasicObject = ArrayAref v60, v88
+          v91:BasicObject = SendDirect v77, 0x0, :inc (0x1108), v89
+          Jump bb9(v91)
+        bb10():
+          v93:BasicObject = Send v54, :__send__, v36, v60 # SendFallbackReason: Send: dispatch chain fallback
+          Jump bb9(v93)
+        bb9(v74:BasicObject):
+          PatchPoint NoEPEscape(method_missing)
+          PopInlineFrame
+          Jump bb4(v74)
+        bb5():
+          v42:BasicObject = Send v12, :inc, v13 # SendFallbackReason: Send: dispatch chain fallback
+          Jump bb4(v42)
+        bb4(v27:BasicObject):
           PatchPoint NoEPEscape(dispatch_missing_inline)
           CheckInterrupts
-          Return v19
+          Return v27
 
         After full optimization:
         fn dispatch_missing_inline@<compiled>:10:
@@ -1263,10 +2669,57 @@ mod hir_opt_tests {
           v9:BasicObject = LoadArg :x@2
           Jump bb3(v7, v8, v9)
         bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
-          v19:BasicObject = Send v12, :inc, v13 # SendFallbackReason: Send: unsupported method type Null
+          CondBranchHasType v12, ObjectSubclass[class_exact:DispatchMissingInlineProxy], bb6(), bb5()
+        bb6():
+          v30:ObjectSubclass[class_exact:DispatchMissingInlineProxy] = RefineType v12, ObjectSubclass[class_exact:DispatchMissingInlineProxy]
+          PatchPoint NoSingletonClass(DispatchMissingInlineProxy@0x1008)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchMissingInlineProxy@0x1008, inc@0x1010, cme:0x1018)
+          PatchPoint MethodRedefined(DispatchMissingInlineProxy@0x1008, method_missing@0x1040, cme:0x1048)
+          v36:StaticSymbol[:inc] = Const Value(VALUE(0x1070))
+          v37:ArrayExact = NewArray v13
+          SetMethodMissingReason 0
+          PushInlineFrame :method_missing, v30 (0x1078), num_args=2
+          v52:CShape = LoadField v30, :shape_id@0x1098
+          v53:CShape[0x1099] = GuardBitEquals v52, CShape(0x1099) recompile
+          v54:BasicObject = LoadField v30, :@target@0x109a
+          PatchPoint NoEPEscape(method_missing)
+          v60:ArrayExact = ToArray v37
+          PatchPoint NoEPEscape(method_missing)
+          CondBranchHasType v54, ObjectSubclass[class_exact:DispatchMissingInlineTarget], bb11(), bb10()
+        bb11():
+          v77:ObjectSubclass[class_exact:DispatchMissingInlineTarget] = RefineType v54, ObjectSubclass[class_exact:DispatchMissingInlineTarget]
+          PatchPoint NoSingletonClass(DispatchMissingInlineTarget@0x10a0)
+          PatchPoint RootBoxOnly
+          PatchPoint MethodRedefined(DispatchMissingInlineTarget@0x10a0, __send__@0x10a8, cme:0x10b0)
+          PatchPoint MethodRedefined(DispatchMissingInlineTarget@0x10a0, inc@0x1010, cme:0x10d8)
+          v84:CInt64 = ArrayLength v60
+          v85:CInt64[1] = GuardBitEquals v84, CInt64(1) recompile
+          v86:CInt64 = CCall v60, :rb_jit_ruby2_keywords_splat_p@0x1100
+          v87:CInt64[0] = GuardBitEquals v86, CInt64(0)
+          v88:CInt64[0] = Const CInt64(0)
+          v89:BasicObject = ArrayAref v60, v88
+          PushInlineFrame :inc, v77 (0x1108), num_args=1
+          v102:Fixnum[1] = Const Value(1)
+          PatchPoint MethodRedefined(Integer@0x1128, +@0x1130, cme:0x1138)
+          v115:Fixnum = GuardType v89, Fixnum recompile
+          v116:Fixnum = FixnumAdd v115, v102
+          PopInlineFrame
+          Jump bb9(v116)
+        bb10():
+          v93:BasicObject = Send v54, :__send__, v36, v60 # SendFallbackReason: Send: dispatch chain fallback
+          Jump bb9(v93)
+        bb9(v74:BasicObject):
+          PatchPoint NoEPEscape(method_missing)
+          PopInlineFrame
+          Jump bb4(v74)
+        bb5():
+          v42:BasicObject = Send v12, :inc, v13 # SendFallbackReason: Send: dispatch chain fallback
+          Jump bb4(v42)
+        bb4(v27:BasicObject):
           PatchPoint NoEPEscape(dispatch_missing_inline)
           CheckInterrupts
-          Return v19
+          Return v27
         ");
     }
 
@@ -1282,10 +2735,23 @@ mod hir_opt_tests {
                 128.times { o.entry }
             ");
             let entry = get_method_iseq("DispatchMissingVcall.new", "entry");
+            let handler = get_method_iseq("DispatchMissingVcall.new", "method_missing");
             unsafe { crate::cruby::rb_zjit_profile_disable(entry) };
             let mut function = iseq_to_hir(entry).unwrap();
             function.optimize();
             function.validate().unwrap();
+            let (block, position, call) = dispatch_chain_direct_call(&function, handler);
+            assert_dispatch_chain_reason_before_call(&function, block, position, MISSING_NOENTRY | MISSING_VCALL | MISSING_FCALL);
+            let flags = unsafe { rb_vm_ci_flag((*call.cd).ci) };
+            assert_eq!(flags & (VM_CALL_VCALL | VM_CALL_FCALL), VM_CALL_VCALL | VM_CALL_FCALL);
+            assert_eq!(call.args.len(), 1);
+            assert!(matches!(function.find(call.args[0]), Insn::Const { val: Const::Value(value) } if value == eval(":absent_vcall")));
+            let original = function.frame_state(call.exit_state);
+            let normalized = function.frame_state(call.state);
+            assert_eq!(original.stack_size(), 1, "a no-argument VCALL has only self on its original stack");
+            assert_eq!(normalized.stack_size(), 2);
+            assert_eq!(normalized.stack().last(), Some(&call.args[0]));
+            assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::SendNameId { .. })));
             assert_snapshot!(hir_string_function(&function), @"
             fn entry@<compiled>:4:
             bb1():
@@ -1297,9 +2763,23 @@ mod hir_opt_tests {
               v4:HeapBasicObject = LoadArg :self@0
               Jump bb3(v4)
             bb3(v6:HeapBasicObject):
-              v11:BasicObject = Send v6, :absent_vcall # SendFallbackReason: Send: unsupported method type Null
+              CondBranchHasType v6, ObjectSubclass[class_exact:DispatchMissingVcall], bb6(), bb5()
+            bb6():
+              v20:ObjectSubclass[class_exact:DispatchMissingVcall] = RefineType v6, ObjectSubclass[class_exact:DispatchMissingVcall]
+              PatchPoint NoSingletonClass(DispatchMissingVcall@0x1000)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchMissingVcall@0x1000, absent_vcall@0x1008, cme:0x1010)
+              PatchPoint MethodRedefined(DispatchMissingVcall@0x1000, method_missing@0x1038, cme:0x1040)
+              v26:StaticSymbol[:absent_vcall] = Const Value(VALUE(0x1068))
+              SetMethodMissingReason 12
+              v29:BasicObject = SendDirect v20, 0x0, :method_missing (0x1070), v26
+              Jump bb4(v29)
+            bb5():
+              v31:BasicObject = Send v6, :absent_vcall # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb4(v31)
+            bb4(v17:BasicObject):
               CheckInterrupts
-              Return v11
+              Return v17
             ");
         });
     }
@@ -1316,7 +2796,20 @@ mod hir_opt_tests {
                 o = DispatchLiteralMissing.new
                 128.times { dispatch_literal_missing(o, 10) }
             ");
+            let handler = get_method_iseq("DispatchLiteralMissing.new", "method_missing");
             let function = dispatch_chain_hir("dispatch_literal_missing");
+            let (_, _, call) = dispatch_chain_direct_call(&function, handler);
+            assert_eq!(call.args.len(), 2, "a literal method_missing call already supplies its own name");
+            assert_eq!(call.call_flags & VM_CALL_OPT_SEND, 0);
+            assert!(matches!(function.find(call.args[0]), Insn::Const { val: Const::Value(value) } if value == eval(":inc")));
+            let original = function.frame_state(call.exit_state);
+            let normalized = function.frame_state(call.state);
+            assert_eq!(original.stack_size(), 3);
+            assert_eq!(normalized.stack_size(), 3);
+            assert_eq!(original.stack().skip(1).copied().collect::<Vec<_>>(), call.args);
+            assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn,
+                Insn::SetMethodMissingReason { .. } | Insn::SendNameId { .. }
+            )), "ordinary direct calls must neither inject a name nor overwrite the VM's missing-call reason");
             assert_snapshot!(hir_string_function(&function), @"
             fn dispatch_literal_missing@<compiled>:6:
             bb1():
@@ -1357,7 +2850,26 @@ mod hir_opt_tests {
                 block = proc { |x| x + 1 }
                 128.times { dispatch_missing_proc(o, 10, block) }
             ");
+            let handler = get_method_iseq("DispatchMissingProc.new", "method_missing");
             let function = dispatch_chain_hir("dispatch_missing_proc");
+            let (block, position, call) = dispatch_chain_direct_call(&function, handler);
+            assert_dispatch_chain_reason_before_call(&function, block, position, MISSING_NOENTRY);
+            assert_eq!(call.args.len(), 2);
+            let Some(BlockHandler::BlockArgProc(proc)) = call.block else {
+                panic!("the handler must receive the caller's Proc block");
+            };
+            let Insn::GuardType { val, state, guard_type, .. } = function.find(proc) else {
+                panic!("the profiled Proc must be guarded before entering the handler");
+            };
+            assert_eq!(guard_type.runtime_exact_ruby_class(), Some(unsafe { rb_cProc }));
+            let original = function.frame_state(call.exit_state);
+            let original_stack: Vec<_> = original.stack().copied().collect();
+            let normalized = function.frame_state(call.state);
+            assert_eq!(original_stack.len(), 3, "original [receiver, x, raw Proc blockarg]");
+            assert_eq!(original_stack[2], val);
+            assert_eq!(function.frame_state(state).stack().copied().collect::<Vec<_>>(), original_stack);
+            assert_eq!(normalized.stack_size(), 3, "normalized [receiver, name, x]");
+            assert_eq!(normalized.stack().skip(1).copied().collect::<Vec<_>>(), call.args);
             assert_snapshot!(hir_string_function(&function), @"
             fn dispatch_missing_proc@<compiled>:5:
             bb1():
@@ -1376,10 +2888,25 @@ mod hir_opt_tests {
               v11:BasicObject = LoadArg :block@3
               Jump bb3(v8, v9, v10, v11)
             bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
-              v23:BasicObject = Send v14, &block, :absent, v15, v16 # SendFallbackReason: Send: unsupported method type Null
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchMissingProc], bb6(), bb5()
+            bb6():
+              v34:ObjectSubclass[class_exact:DispatchMissingProc] = RefineType v14, ObjectSubclass[class_exact:DispatchMissingProc]
+              PatchPoint NoSingletonClass(DispatchMissingProc@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchMissingProc@0x1008, absent@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchMissingProc@0x1008, method_missing@0x1040, cme:0x1048)
+              v40:ObjectSubclass[class_exact:Proc] = GuardType v16, ObjectSubclass[class_exact:Proc] recompile
+              v41:StaticSymbol[:absent] = Const Value(VALUE(0x1070))
+              SetMethodMissingReason 0
+              v44:BasicObject = SendDirect v34, &v40, :method_missing (0x1078), v41, v15
+              Jump bb4(v44)
+            bb5():
+              v46:BasicObject = Send v14, &block, :absent, v15, v16 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb4(v46)
+            bb4(v31:BasicObject):
               PatchPoint NoEPEscape(dispatch_missing_proc)
               CheckInterrupts
-              Return v23
+              Return v31
             ");
         });
     }
@@ -1407,9 +2934,34 @@ mod hir_opt_tests {
                   dispatch_missing_protected(o, 10)
                 end
             ");
-            let snapshots = ["dispatch_missing_private", "dispatch_missing_public_private", "dispatch_missing_public_protected", "dispatch_missing_protected"].map(|method| {
-                hir_string_function(&dispatch_chain_hir(method))
-            });
+            let klass = eval("DispatchMissingVisibility");
+            let handler = get_method_iseq("DispatchMissingVisibility.new", "method_missing");
+            let mut snapshots = Vec::new();
+            for (method, name, reason) in [
+                ("dispatch_missing_private", ":hidden", MISSING_PRIVATE),
+                ("dispatch_missing_public_private", ":hidden", MISSING_PRIVATE),
+                ("dispatch_missing_public_protected", ":guarded", MISSING_PROTECTED),
+            ] {
+                let name = unsafe { rb_get_symbol_id(eval(name)) };
+                let rejected_cme = unsafe { rb_callable_method_entry(klass, name) };
+                let function = dispatch_chain_hir(method);
+                let (block, position, call) = dispatch_chain_direct_call(&function, handler);
+                assert_dispatch_chain_reason_before_call(&function, block, position, reason);
+                assert!(dispatch_chain_insns(&function).any(|insn| matches!(insn,
+                    Insn::PatchPoint { invariant: Invariant::MethodRedefined { klass: guarded_class, method, cme }, .. }
+                        if *guarded_class == klass && *method == name && *cme == rejected_cme
+                )), "a visibility change must invalidate the rejected target lookup");
+                assert!(dispatch_chain_insns(&function).any(|insn| matches!(insn,
+                    Insn::PatchPoint { invariant: Invariant::MethodRedefined { cme, .. }, .. } if *cme == call.cme
+                )));
+                snapshots.push(hir_string_function(&function));
+            }
+            let function = dispatch_chain_hir("dispatch_missing_protected");
+            assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn,
+                Insn::SetMethodMissingReason { .. } | Insn::SendDirect(_)
+            )), "ordinary protected access needs a runtime caller-self permission check");
+            assert!(dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::Send { .. })));
+            snapshots.push(hir_string_function(&function));
             assert_snapshot!(snapshots.join("\n"), @"
             fn dispatch_missing_private@<compiled>:9:
             bb1():
@@ -1426,10 +2978,24 @@ mod hir_opt_tests {
               v9:BasicObject = LoadArg :x@2
               Jump bb3(v7, v8, v9)
             bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
-              v19:BasicObject = Send v12, :hidden, v13 # SendFallbackReason: Send: method private or protected and no FCALL
+              CondBranchHasType v12, ObjectSubclass[class_exact:DispatchMissingVisibility], bb6(), bb5()
+            bb6():
+              v30:ObjectSubclass[class_exact:DispatchMissingVisibility] = RefineType v12, ObjectSubclass[class_exact:DispatchMissingVisibility]
+              PatchPoint NoSingletonClass(DispatchMissingVisibility@0x1008)
+              PatchPoint RootBoxOnly
+              PatchPoint MethodRedefined(DispatchMissingVisibility@0x1008, hidden@0x1010, cme:0x1018)
+              PatchPoint MethodRedefined(DispatchMissingVisibility@0x1008, method_missing@0x1040, cme:0x1048)
+              v36:StaticSymbol[:hidden] = Const Value(VALUE(0x1070))
+              SetMethodMissingReason 1
+              v39:BasicObject = SendDirect v30, 0x0, :method_missing (0x1078), v36, v13
+              Jump bb4(v39)
+            bb5():
+              v41:BasicObject = Send v12, :hidden, v13 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb4(v41)
+            bb4(v27:BasicObject):
               PatchPoint NoEPEscape(dispatch_missing_private)
               CheckInterrupts
-              Return v19
+              Return v27
 
             fn dispatch_missing_public_private@<compiled>:10:
             bb1():
@@ -1447,13 +3013,25 @@ mod hir_opt_tests {
               Jump bb3(v7, v8, v9)
             bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
               v18:StaticSymbol[:hidden] = Const Value(VALUE(0x1008))
+              CondBranchHasType v12, ObjectSubclass[class_exact:DispatchMissingVisibility], bb6(), bb5()
+            bb6():
+              v32:ObjectSubclass[class_exact:DispatchMissingVisibility] = RefineType v12, ObjectSubclass[class_exact:DispatchMissingVisibility]
               PatchPoint NoSingletonClass(DispatchMissingVisibility@0x1010)
+              PatchPoint RootBoxOnly
               PatchPoint MethodRedefined(DispatchMissingVisibility@0x1010, public_send@0x1018, cme:0x1020)
-              v32:ObjectSubclass[class_exact:DispatchMissingVisibility] = GuardType v12, ObjectSubclass[class_exact:DispatchMissingVisibility] recompile
-              v33:BasicObject = CCallVariadic v32, :Kernel#public_send@0x1048, v18, v13
+              PatchPoint MethodRedefined(DispatchMissingVisibility@0x1010, hidden@0x1048, cme:0x1050)
+              PatchPoint MethodRedefined(DispatchMissingVisibility@0x1010, method_missing@0x1078, cme:0x1080)
+              v40:StaticSymbol[:hidden] = Const Value(VALUE(0x1008))
+              SetMethodMissingReason 1
+              v43:BasicObject = SendDirect v32, 0x0, :method_missing (0x10a8), v40, v13
+              Jump bb4(v43)
+            bb5():
+              v45:BasicObject = Send v12, :public_send, v18, v13 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb4(v45)
+            bb4(v29:BasicObject):
               PatchPoint NoEPEscape(dispatch_missing_public_private)
               CheckInterrupts
-              Return v33
+              Return v29
 
             fn dispatch_missing_public_protected@<compiled>:11:
             bb1():
@@ -1471,13 +3049,25 @@ mod hir_opt_tests {
               Jump bb3(v7, v8, v9)
             bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
               v18:StaticSymbol[:guarded] = Const Value(VALUE(0x1008))
+              CondBranchHasType v12, ObjectSubclass[class_exact:DispatchMissingVisibility], bb6(), bb5()
+            bb6():
+              v32:ObjectSubclass[class_exact:DispatchMissingVisibility] = RefineType v12, ObjectSubclass[class_exact:DispatchMissingVisibility]
               PatchPoint NoSingletonClass(DispatchMissingVisibility@0x1010)
+              PatchPoint RootBoxOnly
               PatchPoint MethodRedefined(DispatchMissingVisibility@0x1010, public_send@0x1018, cme:0x1020)
-              v32:ObjectSubclass[class_exact:DispatchMissingVisibility] = GuardType v12, ObjectSubclass[class_exact:DispatchMissingVisibility] recompile
-              v33:BasicObject = CCallVariadic v32, :Kernel#public_send@0x1048, v18, v13
+              PatchPoint MethodRedefined(DispatchMissingVisibility@0x1010, guarded@0x1048, cme:0x1050)
+              PatchPoint MethodRedefined(DispatchMissingVisibility@0x1010, method_missing@0x1078, cme:0x1080)
+              v40:StaticSymbol[:guarded] = Const Value(VALUE(0x1008))
+              SetMethodMissingReason 2
+              v43:BasicObject = SendDirect v32, 0x0, :method_missing (0x10a8), v40, v13
+              Jump bb4(v43)
+            bb5():
+              v45:BasicObject = Send v12, :public_send, v18, v13 # SendFallbackReason: Send: dispatch chain fallback
+              Jump bb4(v45)
+            bb4(v29:BasicObject):
               PatchPoint NoEPEscape(dispatch_missing_public_protected)
               CheckInterrupts
-              Return v33
+              Return v29
 
             fn dispatch_missing_protected@<compiled>:12:
             bb1():
@@ -6271,8 +7861,8 @@ mod hir_opt_tests {
 
     #[test]
     fn test_yield_lambda_falls_back() {
-        // A lambda passed via &l becomes a proc block handler (not imemo_iseq), so it never inlines invocation.
-        // Compiles to Send.
+        // The Ruby target is direct, but a lambda's Proc block handler must not
+        // enter the literal-ISEQ block invocation inliner.
         let result = eval("
             def foo = yield(5)
             def test(l) = foo(&l)
@@ -6281,7 +7871,13 @@ mod hir_opt_tests {
             test(l)
         ");
         assert_eq!(VALUE::fixnum_from_usize(50), result);
-        assert_snapshot!(hir_string("test"), @"
+        let callee = get_method_iseq("self", "foo");
+        let function = dispatch_chain_hir("test");
+        assert_hir_proc_block_call(&function, callee, 0);
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn,
+            Insn::Send { .. } | Insn::InvokeBlockIseqDirect { .. }
+        )));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:3:
         bb1():
           EntryPoint interpreter
@@ -6295,10 +7891,10 @@ mod hir_opt_tests {
           v7:BasicObject = LoadArg :l@1
           Jump bb3(v6, v7)
         bb3(v9:BasicObject, v10:BasicObject):
-          v24:ObjectSubclass[class_exact:Proc] = GuardType v10, ObjectSubclass[class_exact:Proc] recompile
           PatchPoint MethodRedefined(Object@0x1008, foo@0x1010, cme:0x1018)
-          v27:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
-          v28:BasicObject = SendDirect v27, &v24, :foo (0x1040)
+          v25:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v26:ObjectSubclass[class_exact:Proc] = GuardType v10, ObjectSubclass[class_exact:Proc] recompile
+          v28:BasicObject = SendDirect v25, &v26, :foo (0x1040)
           PatchPoint NoEPEscape(test)
           CheckInterrupts
           Return v28
@@ -7488,7 +9084,12 @@ mod hir_opt_tests {
             test
             test
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        let (_, args, _) = assert_hir_single_fallback(&function, "foo", ComplexArgPass, 1, None);
+        assert!(matches!(function.find(args[0]), Insn::HashDup { .. }));
+        assert!(hir_iseq_call_args(&function, get_method_iseq("self", "foo")).is_empty());
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::GuardBitEquals { .. })));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:3:
         bb1():
           EntryPoint interpreter
@@ -7507,6 +9108,7 @@ mod hir_opt_tests {
           v16:HashExact = HashDup v15
           IncrCounter zjit_insn_count
           IncrCounter complex_arg_pass_caller_kw_splat
+          IncrCounter send_direct_fallback_context_send
           v19:BasicObject = Send v8, :foo, v16 # SendFallbackReason: Complex argument passing
           IncrCounter zjit_insn_count
           CheckInterrupts
@@ -7896,7 +9498,12 @@ mod hir_opt_tests {
             test
             test
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        let (_, args, _) = assert_hir_single_fallback(&function, "foo", ComplexArgPass, 1, None);
+        assert!(matches!(function.find(args[0]), Insn::HashDup { .. }));
+        assert!(hir_iseq_call_args(&function, get_method_iseq("self", "foo")).is_empty());
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::GuardBitEquals { .. })));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:3:
         bb1():
           EntryPoint interpreter
@@ -7915,6 +9522,7 @@ mod hir_opt_tests {
           v16:HashExact = HashDup v15
           IncrCounter zjit_insn_count
           IncrCounter complex_arg_pass_caller_kw_splat
+          IncrCounter send_direct_fallback_context_send
           v19:BasicObject = Send v8, :foo, v16 # SendFallbackReason: Complex argument passing
           IncrCounter zjit_insn_count
           CheckInterrupts
@@ -8717,7 +10325,15 @@ mod hir_opt_tests {
             test(&val)
         ");
         assert_contains_opcode("test", YARVINSN_getblockparamproxy);
-        assert_snapshot!(hir_string("test"), @"
+        let callee = get_method_iseq("0", "then");
+        let function = dispatch_chain_hir("test");
+        let call = assert_hir_proc_block_call(&function, callee, 0);
+        assert_hir_const(&function, call.recv, VALUE::fixnum_from_usize(0));
+        assert_eq!(function.frame_state(call.exit_state).stack_size(), 2);
+        assert_eq!(function.frame_state(call.state).stack_size(), 1);
+        assert!(dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::IsBlockParamModified { .. })));
+        assert!(dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::SymToProc { .. })));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:4:
         bb1():
           EntryPoint interpreter
@@ -8775,9 +10391,9 @@ mod hir_opt_tests {
           v49:BasicObject = LoadField v18, :VM_ENV_DATA_INDEX_SPECVAL@0x1003
           Jump bb6(v49, v10)
         bb6(v16:BasicObject, v17:BasicObject):
-          v60:ObjectSubclass[class_exact:Proc] = GuardType v16, ObjectSubclass[class_exact:Proc] recompile
           PatchPoint MethodRedefined(Integer@0x1010, then@0x1018, cme:0x1020)
-          v64:BasicObject = SendDirect v14, &v60, :then (0x1048)
+          v62:ObjectSubclass[class_exact:Proc] = GuardType v16, ObjectSubclass[class_exact:Proc] recompile
+          v64:BasicObject = SendDirect v14, &v62, :then (0x1048)
           PatchPoint NoEPEscape(test)
           CheckInterrupts
           Return v64
@@ -13696,7 +15312,17 @@ mod hir_opt_tests {
             def test(&block) = [].map(&block)
             test; test
         "#);
-        assert_snapshot!(hir_string("test"), @"
+        let callee = get_method_iseq("[]", "map");
+        let function = dispatch_chain_hir("test");
+        let (_, _, call) = dispatch_chain_direct_call(&function, callee);
+        assert!(call.args.is_empty());
+        assert_eq!(call.block, None);
+        assert!(matches!(function.find(call.recv), Insn::NewArray { elements, .. } if elements.is_empty()));
+        assert_eq!(function.frame_state(call.exit_state).stack_size(), 2);
+        assert_eq!(function.frame_state(call.state).stack_size(), 1);
+        assert_hir_nil_block_guards(&function, 1);
+        assert!(dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::IsBlockParamModified { .. })));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:2:
         bb1():
           EntryPoint interpreter
@@ -13754,9 +15380,9 @@ mod hir_opt_tests {
           v49:BasicObject = LoadField v18, :VM_ENV_DATA_INDEX_SPECVAL@0x1003
           Jump bb6(v49, v10)
         bb6(v16:BasicObject, v17:BasicObject):
-          v60:NilClass = GuardBitEquals v16, Value(nil) recompile
           PatchPoint NoSingletonClass(Array@0x1010)
           PatchPoint MethodRedefined(Array@0x1010, map@0x1018, cme:0x1020)
+          v63:NilClass = GuardBitEquals v16, Value(nil) recompile
           v65:BasicObject = SendDirect v14, 0x0, :map (0x1048)
           PatchPoint NoEPEscape(test)
           CheckInterrupts
@@ -14074,7 +15700,16 @@ mod hir_opt_tests {
             end
             test; test
         "#);
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_const(&function, hir_return_value(&function), VALUE::fixnum_from_usize(42));
+        assert_hir_nil_block_guards(&function, 0);
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::Send { .. } | Insn::SendDirect(_))));
+        let callee = get_method_iseq("self", "foo");
+        assert!(dispatch_chain_insns(&function).any(|insn| matches!(insn,
+            Insn::PatchPoint { invariant: Invariant::MethodRedefined { cme, .. }, .. }
+                if unsafe { get_cme_def_type(*cme) == VM_METHOD_TYPE_ISEQ && get_def_iseq_ptr((**cme).def) == callee }
+        )));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:5:
         bb1():
           EntryPoint interpreter
@@ -14088,7 +15723,7 @@ mod hir_opt_tests {
           v31:NilClass = Const Value(nil)
           v13:NilClass = Const Value(nil)
           PatchPoint MethodRedefined(Object@0x1000, foo@0x1008, cme:0x1010)
-          v29:ObjectSubclass[class_exact*:Object@VALUE(0x1000)] = GuardType v8, ObjectSubclass[class_exact*:Object@VALUE(0x1000)] recompile
+          v28:ObjectSubclass[class_exact*:Object@VALUE(0x1000)] = GuardType v8, ObjectSubclass[class_exact*:Object@VALUE(0x1000)] recompile
           v30:Fixnum[42] = Const Value(42)
           PatchPoint NoEPEscape(test)
           CheckInterrupts
@@ -14106,7 +15741,12 @@ mod hir_opt_tests {
             end
             test; test
         "#);
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_const(&function, hir_return_value(&function), VALUE::fixnum_from_usize(42));
+        assert_hir_nil_block_guards(&function, 1);
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::Send { .. } | Insn::SendDirect(_))));
+        assert!(dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::IsBlockParamModified { .. })));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:5:
         bb1():
           EntryPoint interpreter
@@ -14163,9 +15803,9 @@ mod hir_opt_tests {
           v48:BasicObject = LoadField v17, :VM_ENV_DATA_INDEX_SPECVAL@0x1003
           Jump bb6(v48, v10)
         bb6(v15:BasicObject, v16:BasicObject):
-          v59:NilClass = GuardBitEquals v15, Value(nil) recompile
           PatchPoint MethodRedefined(Object@0x1010, foo@0x1018, cme:0x1020)
-          v62:ObjectSubclass[class_exact*:Object@VALUE(0x1010)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1010)] recompile
+          v60:ObjectSubclass[class_exact*:Object@VALUE(0x1010)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1010)] recompile
+          v61:NilClass = GuardBitEquals v15, Value(nil) recompile
           v63:Fixnum[42] = Const Value(42)
           PatchPoint NoEPEscape(test)
           CheckInterrupts
@@ -14184,7 +15824,13 @@ mod hir_opt_tests {
             end
             test; test
         "#);
-        assert_snapshot!(hir_string("test"), @"
+        let callee = get_method_iseq("self", "foo");
+        let function = dispatch_chain_hir("test");
+        let call = assert_hir_proc_block_call(&function, callee, 0);
+        assert_eq!(function.frame_state(call.exit_state).stack_size(), 2);
+        assert_eq!(function.frame_state(call.state).stack_size(), 1);
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::Send { .. })));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:5:
         bb1():
           EntryPoint interpreter
@@ -14207,9 +15853,9 @@ mod hir_opt_tests {
           SetLocal :blk, l0, EP@3, v36
           v24:CPtr = GetEP 0
           v25:BasicObject = LoadField v24, :blk@0x1000
-          v37:ObjectSubclass[class_exact:Proc] = GuardType v25, ObjectSubclass[class_exact:Proc] recompile
           PatchPoint MethodRedefined(Object@0x1008, foo@0x1068, cme:0x1070)
-          v41:BasicObject = SendDirect v35, &v37, :foo (0x1098)
+          v39:ObjectSubclass[class_exact:Proc] = GuardType v25, ObjectSubclass[class_exact:Proc] recompile
+          v41:BasicObject = SendDirect v35, &v39, :foo (0x1098)
           CheckInterrupts
           Return v41
         ");
@@ -14226,7 +15872,14 @@ mod hir_opt_tests {
             end
             test; test
         "#);
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        let (_, args, _) = assert_hir_single_fallback(&function, "foo", ComplexArgPass, 1, Some(BlockHandler::BlockArg));
+        assert!(matches!(function.find(args[0]), Insn::LoadField { .. }));
+        assert!(hir_iseq_call_args(&function, get_method_iseq("self", "foo")).is_empty());
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn,
+            Insn::GuardType { guard_type, .. } if guard_type.exact_ruby_class() == Some(unsafe { rb_cProc })
+        )), "rejected argument plans must not guard the original blockarg");
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:5:
         bb1():
           EntryPoint interpreter
@@ -14240,7 +15893,7 @@ mod hir_opt_tests {
           StoreField v7, :blk@0x1000, v6
           Jump bb3(v5)
         bb3(v10:BasicObject):
-          v39:NilClass = Const Value(nil)
+          v37:NilClass = Const Value(nil)
           PatchPoint MethodRedefined(Object@0x1008, proc@0x1010, cme:0x1018)
           v35:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v10, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
           v36:BasicObject = CCallWithFrame v35, :Kernel#proc@0x1040, block=0x1048
@@ -14249,8 +15902,7 @@ mod hir_opt_tests {
           SetLocal :blk, l0, EP@3, v36
           v24:CPtr = GetEP 0
           v25:BasicObject = LoadField v24, :blk@0x1000
-          v37:ObjectSubclass[class_exact:Proc] = GuardType v25, ObjectSubclass[class_exact:Proc] recompile
-          v27:BasicObject = Send v35, &block, :foo, v37 # SendFallbackReason: Complex argument passing
+          v27:BasicObject = Send v35, &block, :foo, v25 # SendFallbackReason: Complex argument passing
           CheckInterrupts
           Return v27
         ");
@@ -14267,7 +15919,14 @@ mod hir_opt_tests {
             end
             test; test
         "#);
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        let (_, args, _) = assert_hir_single_fallback(&function, "foo", ComplexArgPass, 1, Some(BlockHandler::BlockArg));
+        assert!(matches!(function.find(args[0]), Insn::LoadField { .. }));
+        assert!(hir_iseq_call_args(&function, get_method_iseq("self", "foo")).is_empty());
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn,
+            Insn::GuardType { guard_type, .. } if guard_type.exact_ruby_class() == Some(unsafe { rb_cProc })
+        )), "rejected argument plans must not guard the original blockarg");
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:5:
         bb1():
           EntryPoint interpreter
@@ -14281,7 +15940,7 @@ mod hir_opt_tests {
           StoreField v7, :blk@0x1000, v6
           Jump bb3(v5)
         bb3(v10:BasicObject):
-          v39:NilClass = Const Value(nil)
+          v37:NilClass = Const Value(nil)
           PatchPoint MethodRedefined(Object@0x1008, proc@0x1010, cme:0x1018)
           v35:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v10, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
           v36:BasicObject = CCallWithFrame v35, :Kernel#proc@0x1040, block=0x1048
@@ -14290,8 +15949,7 @@ mod hir_opt_tests {
           SetLocal :blk, l0, EP@3, v36
           v24:CPtr = GetEP 0
           v25:BasicObject = LoadField v24, :blk@0x1000
-          v37:ObjectSubclass[class_exact:Proc] = GuardType v25, ObjectSubclass[class_exact:Proc] recompile
-          v27:BasicObject = Send v35, &block, :foo, v37 # SendFallbackReason: Complex argument passing
+          v27:BasicObject = Send v35, &block, :foo, v25 # SendFallbackReason: Complex argument passing
           CheckInterrupts
           Return v27
         ");
@@ -14299,11 +15957,9 @@ mod hir_opt_tests {
 
     #[test]
     fn test_send_with_proc_block_arg_to_rest_optional_keyword_callee() {
-        // The callee has rest/optional/keyword params, so `prepare_direct_send_args`
-        // builds a `NewArray` for the rest param. That allocation sits between the
-        // Proc `GuardType` and the `SendDirect` that stores the Proc into the callee
-        // frame's specval, so the guarded Proc is only reachable from the VReg at that
-        // point (it is not in the block-arg-stripped snapshot).
+        // Rest-array allocation must preserve the guarded Proc until the direct
+        // call writes it into the callee frame. Pre-entry allocation exits keep
+        // the original blockarg, while the normalized call arguments omit it.
         eval(r#"
             def foo(opt = 10, *rest, kw: 20) = yield(opt + rest.sum + kw)
 
@@ -14313,7 +15969,20 @@ mod hir_opt_tests {
             end
             test; test
         "#);
-        assert_snapshot!(hir_string("test"), @"
+        let callee = get_method_iseq("self", "foo");
+        let function = dispatch_chain_hir("test");
+        let call = assert_hir_proc_block_call(&function, callee, 3);
+        assert_eq!(call.jit_entry_idx, 1);
+        assert_hir_const(&function, call.args[0], VALUE::fixnum_from_usize(1));
+        assert_hir_const(&function, call.args[2], VALUE::fixnum_from_usize(20));
+        let Insn::NewArray { elements, state } = function.find(call.args[1]) else { panic!("expected packed rest arguments") };
+        assert_eq!(elements.len(), 1);
+        assert_hir_const(&function, elements[0], VALUE::fixnum_from_usize(2));
+        assert_eq!(function.frame_state(state).stack().copied().collect::<Vec<_>>(),
+            function.frame_state(call.exit_state).stack().copied().collect::<Vec<_>>());
+        assert_eq!(function.frame_state(call.exit_state).stack_size(), 4);
+        assert_eq!(function.frame_state(call.state).stack_size(), 4);
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:5:
         bb1():
           EntryPoint interpreter
@@ -14327,7 +15996,7 @@ mod hir_opt_tests {
           StoreField v7, :blk@0x1000, v6
           Jump bb3(v5)
         bb3(v10:BasicObject):
-          v49:NilClass = Const Value(nil)
+          v48:NilClass = Const Value(nil)
           PatchPoint MethodRedefined(Object@0x1008, proc@0x1010, cme:0x1018)
           v39:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v10, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
           v40:BasicObject = CCallWithFrame v39, :Kernel#proc@0x1040, block=0x1048
@@ -14338,13 +16007,13 @@ mod hir_opt_tests {
           v26:Fixnum[2] = Const Value(2)
           v28:CPtr = GetEP 0
           v29:BasicObject = LoadField v28, :blk@0x1000
-          v41:ObjectSubclass[class_exact:Proc] = GuardType v29, ObjectSubclass[class_exact:Proc] recompile
           PatchPoint MethodRedefined(Object@0x1008, foo@0x1068, cme:0x1070)
-          v45:ArrayExact = NewArray v26
-          v46:Fixnum[20] = Const Value(20)
-          v48:BasicObject = SendDirect v39, &v41, :foo (0x1098), jit_entry_idx=1, v24, v45, v46
+          v43:ObjectSubclass[class_exact:Proc] = GuardType v29, ObjectSubclass[class_exact:Proc] recompile
+          v44:ArrayExact = NewArray v26
+          v45:Fixnum[20] = Const Value(20)
+          v47:BasicObject = SendDirect v39, &v43, :foo (0x1098), jit_entry_idx=1, v24, v44, v45
           CheckInterrupts
-          Return v48
+          Return v47
         ");
     }
 
@@ -18507,7 +20176,24 @@ mod hir_opt_tests {
             end
             test
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_splat_guards(&function, &[0]);
+        let calls = hir_iseq_call_args(&function, get_method_iseq("self", "foo"));
+        assert_eq!(calls, vec![Vec::<InsnId>::new()]);
+        let sends: Vec<_> = dispatch_chain_insns(&function).filter_map(|insn| match insn {
+            Insn::Send { cd, args, reason, .. } => {
+                assert_eq!(*reason, ComplexArgPass);
+                assert_eq!(args.len(), 1);
+                assert!(matches!(function.find(args[0]), Insn::ToArray { .. }));
+                Some(ruby_call_method_name(*cd))
+            }
+            _ => None,
+        }).collect();
+        assert_eq!(sends.len(), 2);
+        assert!(sends.iter().any(|name| name == "display"));
+        assert!(sends.iter().any(|name| name == "itself"));
+        assert!(matches!(function.find(hir_return_value(&function)), Insn::Send { cd, .. } if ruby_call_method_name(cd) == "itself"));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:6:
         bb1():
           EntryPoint interpreter
@@ -18522,11 +20208,11 @@ mod hir_opt_tests {
           v13:ArrayExact = NewArray
           v19:ArrayExact = ToArray v13
           PatchPoint NoEPEscape(test)
-          v57:CInt64 = ArrayLength v19
-          v58:CInt64[0] = GuardBitEquals v57, CInt64(0) recompile
           PatchPoint MethodRedefined(Object@0x1000, foo@0x1008, cme:0x1010)
-          v60:ObjectSubclass[class_exact*:Object@VALUE(0x1000)] = GuardType v8, ObjectSubclass[class_exact*:Object@VALUE(0x1000)] recompile
-          PushInlineFrame :foo, v60 (0x1038), num_args=0
+          v58:ObjectSubclass[class_exact*:Object@VALUE(0x1000)] = GuardType v8, ObjectSubclass[class_exact*:Object@VALUE(0x1000)] recompile
+          v59:CInt64 = ArrayLength v19
+          v60:CInt64[0] = GuardBitEquals v59, CInt64(0) recompile
+          PushInlineFrame :foo, v58 (0x1038), num_args=0
           PatchPoint MethodRedefined(Object@0x1000, itself@0x1058, cme:0x1060)
           PopInlineFrame
           v29:StringExact[VALUE(0x1088)] = Const Value(VALUE(0x1088))
@@ -18537,7 +20223,7 @@ mod hir_opt_tests {
           PatchPoint NoEPEscape(test)
           v45:ArrayExact = ToArray v13
           PatchPoint NoEPEscape(test)
-          v49:BasicObject = Send v60, :itself, v45 # SendFallbackReason: Complex argument passing
+          v49:BasicObject = Send v58, :itself, v45 # SendFallbackReason: Complex argument passing
           PatchPoint NoEPEscape(test)
           CheckInterrupts
           Return v49
@@ -18553,7 +20239,17 @@ mod hir_opt_tests {
             test([1, 2])
             test([3, 4])
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_splat_guards(&function, &[2]);
+        let calls = hir_iseq_call_args(&function, get_method_iseq("self", "foo"));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].len(), 2);
+        for (index, &arg) in calls[0].iter().enumerate() {
+            assert_hir_splat_element(&function, arg, index as i64);
+        }
+        assert!(matches!(function.find(hir_return_value(&function)), Insn::NewArray { elements, .. } if elements == calls[0]));
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::Send { .. } | Insn::SendDirect(_))));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:3:
         bb1():
           EntryPoint interpreter
@@ -18576,18 +20272,18 @@ mod hir_opt_tests {
           PatchPoint NoEPEscape(test)
           IncrCounter zjit_insn_count
           IncrCounter caller_splat_profile_monomorphic
-          v36:CInt64 = ArrayLength v21
-          v37:CInt64[2] = GuardBitEquals v36, CInt64(2) recompile
-          v38:CInt64 = CCall v21, :rb_jit_ruby2_keywords_splat_p@0x1001
-          v39:CInt64[0] = GuardBitEquals v38, CInt64(0)
-          IncrCounter caller_splat_optimized
           PatchPoint MethodRedefined(Object@0x1008, foo@0x1010, cme:0x1018)
-          v42:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v37:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v38:CInt64 = ArrayLength v21
+          v39:CInt64[2] = GuardBitEquals v38, CInt64(2) recompile
+          v40:CInt64 = CCall v21, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v41:CInt64[0] = GuardBitEquals v40, CInt64(0)
+          IncrCounter caller_splat_optimized
           v43:CInt64[0] = Const CInt64(0)
           v44:BasicObject = ArrayAref v21, v43
           v45:CInt64[1] = Const CInt64(1)
           v46:BasicObject = ArrayAref v21, v45
-          PushInlineFrame :foo, v42 (0x1040), num_args=2
+          PushInlineFrame :foo, v37 (0x1048), num_args=2
           IncrCounter inline_iseq_optimized_send_count
           IncrCounter zjit_insn_count
           IncrCounter zjit_insn_count
@@ -18610,7 +20306,18 @@ mod hir_opt_tests {
             test([1])
             test([2])
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_splat_guards(&function, &[1]);
+        let calls = hir_iseq_call_args(&function, get_method_iseq("self", "foo"));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].len(), 1);
+        assert_hir_splat_element(&function, calls[0][0], 0);
+        let Insn::FixnumAdd { left, right, .. } = function.find(hir_return_value(&function)) else { panic!("expected inlined arithmetic") };
+        assert_hir_const(&function, right, VALUE::fixnum_from_usize(1));
+        assert!(matches!(function.find(left), Insn::GuardType { val, guard_type, .. }
+            if val == calls[0][0] && guard_type.is_subtype(types::Fixnum)));
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::Send { .. } | Insn::SendDirect(_))));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:3:
         bb1():
           EntryPoint interpreter
@@ -18626,17 +20333,17 @@ mod hir_opt_tests {
         bb3(v9:BasicObject, v10:BasicObject):
           v16:ArrayExact = ToArray v10
           PatchPoint NoEPEscape(test)
-          v28:CInt64 = ArrayLength v16
-          v29:CInt64[1] = GuardBitEquals v28, CInt64(1) recompile
-          v30:CInt64 = CCall v16, :rb_jit_ruby2_keywords_splat_p@0x1001
-          v31:CInt64[0] = GuardBitEquals v30, CInt64(0)
           PatchPoint MethodRedefined(Object@0x1008, foo@0x1010, cme:0x1018)
-          v33:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v29:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v30:CInt64 = ArrayLength v16
+          v31:CInt64[1] = GuardBitEquals v30, CInt64(1) recompile
+          v32:CInt64 = CCall v16, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v33:CInt64[0] = GuardBitEquals v32, CInt64(0)
           v34:CInt64[0] = Const CInt64(0)
           v35:BasicObject = ArrayAref v16, v34
-          PushInlineFrame :foo, v33 (0x1040), num_args=1
+          PushInlineFrame :foo, v29 (0x1048), num_args=1
           v45:Fixnum[1] = Const Value(1)
-          PatchPoint MethodRedefined(Integer@0x1060, +@0x1068, cme:0x1070)
+          PatchPoint MethodRedefined(Integer@0x1068, +@0x1070, cme:0x1078)
           v58:Fixnum = GuardType v35, Fixnum recompile
           v59:Fixnum = FixnumAdd v58, v45
           PopInlineFrame
@@ -18662,7 +20369,20 @@ mod hir_opt_tests {
             test(CallerSplatA.new, [3])
             test(CallerSplatB.new, [4])
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_splat_guards(&function, &[1, 1]);
+        for receiver in ["CallerSplatA.new", "CallerSplatB.new"] {
+            let calls = hir_iseq_call_args(&function, get_method_iseq(receiver, "target"));
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].len(), 1);
+            let Insn::NewArray { elements, .. } = function.find(calls[0][0]) else { panic!("expected packed rest argument") };
+            assert_eq!(elements.len(), 1);
+            assert_hir_splat_element(&function, elements[0], 0);
+        }
+        assert_eq!(dispatch_chain_insns(&function).filter(|insn| matches!(insn, Insn::CondBranchHasType(_))).count(), 2);
+        let (_, args, _) = assert_hir_single_fallback(&function, "target", SendPolymorphicFallback, 1, None);
+        assert!(matches!(function.find(args[0]), Insn::ToArray { .. }));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:8:
         bb1():
           EntryPoint interpreter
@@ -18684,31 +20404,31 @@ mod hir_opt_tests {
         bb6():
           v26:ObjectSubclass[class_exact:CallerSplatA] = RefineType v12, ObjectSubclass[class_exact:CallerSplatA]
           PatchPoint NoSingletonClass(CallerSplatA@0x1008)
-          v44:CInt64 = ArrayLength v19
-          v45:CInt64[1] = GuardBitEquals v44, CInt64(1) recompile
-          v46:CInt64 = CCall v19, :rb_jit_ruby2_keywords_splat_p@0x1010
-          v47:CInt64[0] = GuardBitEquals v46, CInt64(0)
-          PatchPoint MethodRedefined(CallerSplatA@0x1008, target@0x1011, cme:0x1018)
+          PatchPoint MethodRedefined(CallerSplatA@0x1008, target@0x1010, cme:0x1018)
+          v45:CInt64 = ArrayLength v19
+          v46:CInt64[1] = GuardBitEquals v45, CInt64(1) recompile
+          v47:CInt64 = CCall v19, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v48:CInt64[0] = GuardBitEquals v47, CInt64(0)
           v49:CInt64[0] = Const CInt64(0)
           v50:BasicObject = ArrayAref v19, v49
           v51:ArrayExact = NewArray v50
-          PushInlineFrame :target, v26 (0x1040), num_args=1
+          PushInlineFrame :target, v26 (0x1048), num_args=1
           PopInlineFrame
           Jump bb4(v51)
         bb7():
           CondBranchHasType v12, ObjectSubclass[class_exact:CallerSplatB], bb8(), bb5()
         bb8():
           v31:ObjectSubclass[class_exact:CallerSplatB] = RefineType v12, ObjectSubclass[class_exact:CallerSplatB]
-          PatchPoint NoSingletonClass(CallerSplatB@0x1060)
-          v55:CInt64 = ArrayLength v19
-          v56:CInt64[1] = GuardBitEquals v55, CInt64(1) recompile
-          v57:CInt64 = CCall v19, :rb_jit_ruby2_keywords_splat_p@0x1010
-          v58:CInt64[0] = GuardBitEquals v57, CInt64(0)
-          PatchPoint MethodRedefined(CallerSplatB@0x1060, target@0x1011, cme:0x1068)
+          PatchPoint NoSingletonClass(CallerSplatB@0x1068)
+          PatchPoint MethodRedefined(CallerSplatB@0x1068, target@0x1010, cme:0x1070)
+          v56:CInt64 = ArrayLength v19
+          v57:CInt64[1] = GuardBitEquals v56, CInt64(1) recompile
+          v58:CInt64 = CCall v19, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v59:CInt64[0] = GuardBitEquals v58, CInt64(0)
           v60:CInt64[0] = Const CInt64(0)
           v61:BasicObject = ArrayAref v19, v60
           v62:ArrayExact = NewArray v61
-          PushInlineFrame :target, v31 (0x1090), num_args=1
+          PushInlineFrame :target, v31 (0x1098), num_args=1
           PopInlineFrame
           Jump bb4(v62)
         bb5():
@@ -18729,7 +20449,13 @@ mod hir_opt_tests {
             test([])
             test([])
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_splat_guards(&function, &[0]);
+        let calls = hir_iseq_call_args(&function, get_method_iseq("self", "foo"));
+        assert_eq!(calls, vec![Vec::<InsnId>::new()]);
+        assert_hir_const(&function, hir_return_value(&function), VALUE::fixnum_from_usize(1));
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::Send { .. } | Insn::SendDirect(_) | Insn::ArrayAref { .. })));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:3:
         bb1():
           EntryPoint interpreter
@@ -18745,11 +20471,11 @@ mod hir_opt_tests {
         bb3(v9:BasicObject, v10:BasicObject):
           v16:ArrayExact = ToArray v10
           PatchPoint NoEPEscape(test)
-          v28:CInt64 = ArrayLength v16
-          v29:CInt64[0] = GuardBitEquals v28, CInt64(0) recompile
           PatchPoint MethodRedefined(Object@0x1008, foo@0x1010, cme:0x1018)
-          v31:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
-          PushInlineFrame :foo, v31 (0x1040), num_args=0
+          v29:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v30:CInt64 = ArrayLength v16
+          v31:CInt64[0] = GuardBitEquals v30, CInt64(0) recompile
+          PushInlineFrame :foo, v29 (0x1040), num_args=0
           v39:Fixnum[1] = Const Value(1)
           PopInlineFrame
           CheckInterrupts
@@ -18765,7 +20491,16 @@ mod hir_opt_tests {
             test([2, 3])
             test([4, 5])
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_splat_guards(&function, &[2]);
+        let calls = hir_iseq_call_args(&function, get_method_iseq("self", "foo"));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].len(), 3);
+        assert_hir_const(&function, calls[0][0], VALUE::fixnum_from_usize(1));
+        assert_hir_splat_element(&function, calls[0][1], 0);
+        assert_hir_splat_element(&function, calls[0][2], 1);
+        assert!(matches!(function.find(hir_return_value(&function)), Insn::NewArray { elements, .. } if elements == calls[0]));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:3:
         bb1():
           EntryPoint interpreter
@@ -18782,17 +20517,17 @@ mod hir_opt_tests {
           v15:Fixnum[1] = Const Value(1)
           v18:ArrayExact = ToArray v10
           PatchPoint NoEPEscape(test)
-          v30:CInt64 = ArrayLength v18
-          v31:CInt64[2] = GuardBitEquals v30, CInt64(2) recompile
-          v32:CInt64 = CCall v18, :rb_jit_ruby2_keywords_splat_p@0x1001
-          v33:CInt64[0] = GuardBitEquals v32, CInt64(0)
           PatchPoint MethodRedefined(Object@0x1008, foo@0x1010, cme:0x1018)
-          v35:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v31:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v32:CInt64 = ArrayLength v18
+          v33:CInt64[2] = GuardBitEquals v32, CInt64(2) recompile
+          v34:CInt64 = CCall v18, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v35:CInt64[0] = GuardBitEquals v34, CInt64(0)
           v36:CInt64[0] = Const CInt64(0)
           v37:BasicObject = ArrayAref v18, v36
           v38:CInt64[1] = Const CInt64(1)
           v39:BasicObject = ArrayAref v18, v38
-          PushInlineFrame :foo, v35 (0x1040), num_args=3
+          PushInlineFrame :foo, v31 (0x1048), num_args=3
           v53:ArrayExact = NewArray v15, v37, v39
           PopInlineFrame
           PatchPoint NoEPEscape(test)
@@ -18809,7 +20544,20 @@ mod hir_opt_tests {
             test([1, 2, 3, 4, 5, 6, 7])
             test([8, 9, 10, 11, 12, 13, 14])
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_splat_guards(&function, &[7]);
+        let calls = hir_iseq_call_args(&function, get_method_iseq("self", "foo"));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].len(), 1);
+        let rest = calls[0][0];
+        let Insn::NewArray { elements, .. } = function.find(rest) else { panic!("expected packed rest arguments") };
+        assert_eq!(elements.len(), 7);
+        for (index, &arg) in elements.iter().enumerate() {
+            assert_hir_splat_element(&function, arg, index as i64);
+        }
+        let Insn::BoxFixnum { val, .. } = function.find(hir_return_value(&function)) else { panic!("expected the packed array length") };
+        assert!(matches!(function.find(val), Insn::ArrayLength { array } if array == rest));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:3:
         bb1():
           EntryPoint interpreter
@@ -18825,12 +20573,12 @@ mod hir_opt_tests {
         bb3(v9:BasicObject, v10:BasicObject):
           v16:ArrayExact = ToArray v10
           PatchPoint NoEPEscape(test)
-          v28:CInt64 = ArrayLength v16
-          v29:CInt64[7] = GuardBitEquals v28, CInt64(7) recompile
-          v30:CInt64 = CCall v16, :rb_jit_ruby2_keywords_splat_p@0x1001
-          v31:CInt64[0] = GuardBitEquals v30, CInt64(0)
           PatchPoint MethodRedefined(Object@0x1008, foo@0x1010, cme:0x1018)
-          v33:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v29:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v30:CInt64 = ArrayLength v16
+          v31:CInt64[7] = GuardBitEquals v30, CInt64(7) recompile
+          v32:CInt64 = CCall v16, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v33:CInt64[0] = GuardBitEquals v32, CInt64(0)
           v34:CInt64[0] = Const CInt64(0)
           v35:BasicObject = ArrayAref v16, v34
           v36:CInt64[1] = Const CInt64(1)
@@ -18846,9 +20594,9 @@ mod hir_opt_tests {
           v46:CInt64[6] = Const CInt64(6)
           v47:BasicObject = ArrayAref v16, v46
           v48:ArrayExact = NewArray v35, v37, v39, v41, v43, v45, v47
-          PushInlineFrame :foo, v33 (0x1040), num_args=1
-          PatchPoint NoSingletonClass(Array@0x1060)
-          PatchPoint MethodRedefined(Array@0x1060, length@0x1068, cme:0x1070)
+          PushInlineFrame :foo, v29 (0x1048), num_args=1
+          PatchPoint NoSingletonClass(Array@0x1068)
+          PatchPoint MethodRedefined(Array@0x1068, length@0x1070, cme:0x1078)
           v71:CInt64 = ArrayLength v48
           v72:Fixnum = BoxFixnum v71
           PopInlineFrame
@@ -18866,7 +20614,21 @@ mod hir_opt_tests {
             test([3, 4, 5])
             test([6, 7, 8])
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_splat_guards(&function, &[3]);
+        let calls = hir_iseq_call_args(&function, get_method_iseq("self", "foo"));
+        assert_eq!(calls.len(), 1);
+        let args = &calls[0];
+        assert_eq!(args.len(), 5);
+        assert_hir_const(&function, args[0], VALUE::fixnum_from_usize(1));
+        assert_hir_splat_element(&function, args[1], 0);
+        let Insn::NewArray { elements, .. } = function.find(args[2]) else { panic!("expected a rest array between optional and post arguments") };
+        assert_eq!(elements.len(), 1);
+        assert_hir_splat_element(&function, elements[0], 1);
+        assert_hir_splat_element(&function, args[3], 2);
+        assert_hir_const(&function, args[4], VALUE::fixnum_from_usize(40));
+        assert!(matches!(function.find(hir_return_value(&function)), Insn::NewArray { elements, .. } if &elements == args));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:3:
         bb1():
           EntryPoint interpreter
@@ -18883,12 +20645,12 @@ mod hir_opt_tests {
           v15:Fixnum[1] = Const Value(1)
           v18:ArrayExact = ToArray v10
           PatchPoint NoEPEscape(test)
-          v30:CInt64 = ArrayLength v18
-          v31:CInt64[3] = GuardBitEquals v30, CInt64(3) recompile
-          v32:CInt64 = CCall v18, :rb_jit_ruby2_keywords_splat_p@0x1001
-          v33:CInt64[0] = GuardBitEquals v32, CInt64(0)
           PatchPoint MethodRedefined(Object@0x1008, foo@0x1010, cme:0x1018)
-          v35:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v31:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v32:CInt64 = ArrayLength v18
+          v33:CInt64[3] = GuardBitEquals v32, CInt64(3) recompile
+          v34:CInt64 = CCall v18, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v35:CInt64[0] = GuardBitEquals v34, CInt64(0)
           v36:CInt64[0] = Const CInt64(0)
           v37:BasicObject = ArrayAref v18, v36
           v38:CInt64[1] = Const CInt64(1)
@@ -18898,7 +20660,7 @@ mod hir_opt_tests {
           v42:BasicObject = ArrayAref v18, v41
           v43:Fixnum[40] = Const Value(40)
           v66:Fixnum[0] = Const Value(0)
-          PushInlineFrame :foo, v35 (0x1040), num_args=5
+          PushInlineFrame :foo, v31 (0x1048), num_args=5
           v62:ArrayExact = NewArray v15, v37, v40, v42, v43
           PopInlineFrame
           PatchPoint NoEPEscape(test)
@@ -18916,7 +20678,13 @@ mod hir_opt_tests {
             test([1, 2])
             test([3, 4])
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        let (_, args, _) = assert_hir_single_fallback(&function, "foo", ComplexArgPass, 2, None);
+        assert!(matches!(function.find(args[0]), Insn::ToArray { .. }));
+        assert!(function.type_of(args[1]).is_subtype(types::HashExact));
+        assert_hir_splat_guards(&function, &[]);
+        assert!(hir_iseq_call_args(&function, get_method_iseq("self", "foo")).is_empty());
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:3:
         bb1():
           EntryPoint interpreter
@@ -18940,9 +20708,10 @@ mod hir_opt_tests {
           IncrCounter zjit_insn_count
           v26:HashExact[VALUE(0x1008)] = Const Value(VALUE(0x1008))
           IncrCounter zjit_insn_count
-          IncrCounter complex_arg_pass_caller_splat
           IncrCounter caller_splat_profile_monomorphic
+          IncrCounter complex_arg_pass_caller_splat
           IncrCounter complex_arg_pass_caller_kw_splat
+          IncrCounter send_direct_fallback_context_send
           v29:BasicObject = Send v11, :foo, v21, v26 # SendFallbackReason: Complex argument passing
           PatchPoint NoEPEscape(test)
           IncrCounter zjit_insn_count
@@ -18959,7 +20728,27 @@ mod hir_opt_tests {
             test([1, 2, 3])
             test([4, 5, 6])
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let callee = get_method_iseq("self", "foo");
+        let function = dispatch_chain_hir("test");
+        assert_hir_splat_guards(&function, &[3]);
+        let calls = hir_iseq_call_args(&function, callee);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].len(), 1);
+        let Insn::NewArray { elements, .. } = function.find(calls[0][0]) else { panic!("expected packed rest arguments") };
+        assert_eq!(elements.len(), 3);
+        for (index, &arg) in elements.iter().enumerate() {
+            assert_hir_splat_element(&function, arg, index as i64);
+        }
+        let block = dispatch_chain_insns(&function).find_map(|insn| match insn {
+            Insn::PushInlineFrame { iseq, blockiseq, .. } if *iseq == callee => *blockiseq,
+            _ => None,
+        }).expect("the literal block must survive argument adaptation");
+        let Insn::InvokeBlockIseqDirect { iseq, args, .. } = function.find(hir_return_value(&function)) else { panic!("expected direct yield") };
+        assert_eq!(iseq, block);
+        assert_eq!(args.len(), 1);
+        let Insn::BoxFixnum { val, .. } = function.find(args[0]) else { panic!("yield must receive args.length") };
+        assert!(matches!(function.find(val), Insn::ArrayLength { array } if array == calls[0][0]));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:3:
         bb1():
           EntryPoint interpreter
@@ -18975,12 +20764,12 @@ mod hir_opt_tests {
         bb3(v9:BasicObject, v10:BasicObject):
           v16:ArrayExact = ToArray v10
           PatchPoint NoEPEscape(test)
-          v28:CInt64 = ArrayLength v16
-          v29:CInt64[3] = GuardBitEquals v28, CInt64(3) recompile
-          v30:CInt64 = CCall v16, :rb_jit_ruby2_keywords_splat_p@0x1001
-          v31:CInt64[0] = GuardBitEquals v30, CInt64(0)
           PatchPoint MethodRedefined(Object@0x1008, foo@0x1010, cme:0x1018)
-          v33:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v29:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v30:CInt64 = ArrayLength v16
+          v31:CInt64[3] = GuardBitEquals v30, CInt64(3) recompile
+          v32:CInt64 = CCall v16, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v33:CInt64[0] = GuardBitEquals v32, CInt64(0)
           v34:CInt64[0] = Const CInt64(0)
           v35:BasicObject = ArrayAref v16, v34
           v36:CInt64[1] = Const CInt64(1)
@@ -18988,16 +20777,16 @@ mod hir_opt_tests {
           v38:CInt64[2] = Const CInt64(2)
           v39:BasicObject = ArrayAref v16, v38
           v40:ArrayExact = NewArray v35, v37, v39
-          PushInlineFrame :foo, v33 (0x1040), num_args=1
-          PatchPoint NoSingletonClass(Array@0x1060)
-          PatchPoint MethodRedefined(Array@0x1060, length@0x1068, cme:0x1070)
+          PushInlineFrame :foo, v29 (0x1048), num_args=1
+          PatchPoint NoSingletonClass(Array@0x1068)
+          PatchPoint MethodRedefined(Array@0x1068, length@0x1070, cme:0x1078)
           v71:CInt64 = ArrayLength v40
           v72:Fixnum = BoxFixnum v71
           v53:CPtr = GetEP 0
-          v54:CInt64 = LoadField v53, :VM_ENV_DATA_INDEX_SPECVAL@0x1098
+          v54:CInt64 = LoadField v53, :VM_ENV_DATA_INDEX_SPECVAL@0x10a0
           v55:CInt64[-4] = Const CInt64(-4)
           v56:CInt64 = IntAnd v54, v55
-          v57:BasicObject = InvokeBlockIseqDirect (0x10a0), v56, v72
+          v57:BasicObject = InvokeBlockIseqDirect (0x10a8), v56, v72
           PatchPoint NoEPEscape(foo)
           PopInlineFrame
           PatchPoint NoEPEscape(test)
@@ -19058,7 +20847,25 @@ mod hir_opt_tests {
             test([1, 2])
             test([3])
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_splat_guards(&function, &[1, 2]);
+        let calls = hir_iseq_call_args(&function, get_method_iseq("self", "foo"));
+        assert_eq!(calls.len(), 2);
+        let mut lengths = vec![];
+        for args in calls {
+            assert_eq!(args.len(), 1);
+            let Insn::NewArray { elements, .. } = function.find(args[0]) else { panic!("expected packed rest arguments") };
+            lengths.push(elements.len());
+            for (index, &arg) in elements.iter().enumerate() {
+                assert_hir_splat_element(&function, arg, index as i64);
+            }
+        }
+        lengths.sort_unstable();
+        assert_eq!(lengths, vec![1, 2]);
+        assert_eq!(dispatch_chain_insns(&function).filter(|insn| matches!(insn, Insn::CondBranch { .. })).count(), 2);
+        let (_, args, _) = assert_hir_single_fallback(&function, "foo", ComplexArgPass, 1, None);
+        assert!(matches!(function.find(args[0]), Insn::ToArray { .. }));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:3:
         bb1():
           EntryPoint interpreter
@@ -19086,19 +20893,19 @@ mod hir_opt_tests {
           CondBranch v29, bb6(), bb7()
         bb6():
           IncrCounter caller_splat_profile_polymorphic
-          v49:CInt64 = ArrayLength v21
-          v50:CInt64[2] = GuardBitEquals v49, CInt64(2) recompile
-          v51:CInt64 = CCall v21, :rb_jit_ruby2_keywords_splat_p@0x1001
-          v52:CInt64[0] = GuardBitEquals v51, CInt64(0)
-          IncrCounter caller_splat_optimized
           PatchPoint MethodRedefined(Object@0x1008, foo@0x1010, cme:0x1018)
-          v55:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v50:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v51:CInt64 = ArrayLength v21
+          v52:CInt64[2] = GuardBitEquals v51, CInt64(2) recompile
+          v53:CInt64 = CCall v21, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v54:CInt64[0] = GuardBitEquals v53, CInt64(0)
+          IncrCounter caller_splat_optimized
           v56:CInt64[0] = Const CInt64(0)
           v57:BasicObject = ArrayAref v21, v56
           v58:CInt64[1] = Const CInt64(1)
           v59:BasicObject = ArrayAref v21, v58
           v60:ArrayExact = NewArray v57, v59
-          PushInlineFrame :foo, v55 (0x1040), num_args=1
+          PushInlineFrame :foo, v50 (0x1048), num_args=1
           IncrCounter inline_iseq_optimized_send_count
           IncrCounter zjit_insn_count
           IncrCounter zjit_insn_count
@@ -19110,17 +20917,17 @@ mod hir_opt_tests {
           CondBranch v34, bb8(), bb5()
         bb8():
           IncrCounter caller_splat_profile_polymorphic
-          v64:CInt64 = ArrayLength v21
-          v65:CInt64[1] = GuardBitEquals v64, CInt64(1) recompile
-          v66:CInt64 = CCall v21, :rb_jit_ruby2_keywords_splat_p@0x1001
-          v67:CInt64[0] = GuardBitEquals v66, CInt64(0)
-          IncrCounter caller_splat_optimized
           PatchPoint MethodRedefined(Object@0x1008, foo@0x1010, cme:0x1018)
-          v70:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v65:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v66:CInt64 = ArrayLength v21
+          v67:CInt64[1] = GuardBitEquals v66, CInt64(1) recompile
+          v68:CInt64 = CCall v21, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v69:CInt64[0] = GuardBitEquals v68, CInt64(0)
+          IncrCounter caller_splat_optimized
           v71:CInt64[0] = Const CInt64(0)
           v72:BasicObject = ArrayAref v21, v71
           v73:ArrayExact = NewArray v72
-          PushInlineFrame :foo, v70 (0x1040), num_args=1
+          PushInlineFrame :foo, v65 (0x1048), num_args=1
           IncrCounter inline_iseq_optimized_send_count
           IncrCounter zjit_insn_count
           IncrCounter zjit_insn_count
@@ -19129,8 +20936,10 @@ mod hir_opt_tests {
         bb5():
           IncrCounter caller_splat_profile_polymorphic
           IncrCounter complex_arg_pass_caller_splat
+          IncrCounter send_direct_fallback_context_send
           IncrCounter caller_splat_profile_polymorphic
           IncrCounter complex_arg_pass_caller_splat
+          IncrCounter send_direct_fallback_context_send
           v38:BasicObject = Send v11, :foo, v21 # SendFallbackReason: Complex argument passing
           Jump bb4(v38)
         bb4(v26:BasicObject):
@@ -19158,7 +20967,28 @@ mod hir_opt_tests {
             test(CallerSplatB.new, [6])
             test(CallerSplatA.new, [7])
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_splat_guards(&function, &[1, 2, 1, 2]);
+        for receiver in ["CallerSplatA.new", "CallerSplatB.new"] {
+            let calls = hir_iseq_call_args(&function, get_method_iseq(receiver, "target"));
+            assert_eq!(calls.len(), 2);
+            let mut lengths = vec![];
+            for args in calls {
+                assert_eq!(args.len(), 1);
+                let Insn::NewArray { elements, .. } = function.find(args[0]) else { panic!("expected packed rest arguments") };
+                lengths.push(elements.len());
+                for (index, &arg) in elements.iter().enumerate() {
+                    assert_hir_splat_element(&function, arg, index as i64);
+                }
+            }
+            lengths.sort_unstable();
+            assert_eq!(lengths, vec![1, 2]);
+        }
+        assert_eq!(dispatch_chain_insns(&function).filter(|insn| matches!(insn, Insn::CondBranchHasType(_))).count(), 2);
+        assert_eq!(dispatch_chain_insns(&function).filter(|insn| matches!(insn, Insn::CondBranch { .. })).count(), 4);
+        let (_, args, _) = assert_hir_single_fallback(&function, "target", SendPolymorphicFallback, 1, None);
+        assert!(matches!(function.find(args[0]), Insn::ToArray { .. }));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:8:
         bb1():
           EntryPoint interpreter
@@ -19185,15 +21015,15 @@ mod hir_opt_tests {
           CondBranch v29, bb8(), bb9()
         bb8():
           PatchPoint NoSingletonClass(CallerSplatB@0x1008)
-          v62:CInt64 = ArrayLength v19
-          v63:CInt64[1] = GuardBitEquals v62, CInt64(1) recompile
-          v64:CInt64 = CCall v19, :rb_jit_ruby2_keywords_splat_p@0x1010
-          v65:CInt64[0] = GuardBitEquals v64, CInt64(0)
-          PatchPoint MethodRedefined(CallerSplatB@0x1008, target@0x1011, cme:0x1018)
+          PatchPoint MethodRedefined(CallerSplatB@0x1008, target@0x1010, cme:0x1018)
+          v63:CInt64 = ArrayLength v19
+          v64:CInt64[1] = GuardBitEquals v63, CInt64(1) recompile
+          v65:CInt64 = CCall v19, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v66:CInt64[0] = GuardBitEquals v65, CInt64(0)
           v67:CInt64[0] = Const CInt64(0)
           v68:BasicObject = ArrayAref v19, v67
           v69:ArrayExact = NewArray v68
-          PushInlineFrame :target, v26 (0x1040), num_args=1
+          PushInlineFrame :target, v26 (0x1048), num_args=1
           PopInlineFrame
           Jump bb4(v69)
         bb9():
@@ -19202,17 +21032,17 @@ mod hir_opt_tests {
           CondBranch v34, bb10(), bb5()
         bb10():
           PatchPoint NoSingletonClass(CallerSplatB@0x1008)
-          v73:CInt64 = ArrayLength v19
-          v74:CInt64[2] = GuardBitEquals v73, CInt64(2) recompile
-          v75:CInt64 = CCall v19, :rb_jit_ruby2_keywords_splat_p@0x1010
-          v76:CInt64[0] = GuardBitEquals v75, CInt64(0)
-          PatchPoint MethodRedefined(CallerSplatB@0x1008, target@0x1011, cme:0x1018)
+          PatchPoint MethodRedefined(CallerSplatB@0x1008, target@0x1010, cme:0x1018)
+          v74:CInt64 = ArrayLength v19
+          v75:CInt64[2] = GuardBitEquals v74, CInt64(2) recompile
+          v76:CInt64 = CCall v19, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v77:CInt64[0] = GuardBitEquals v76, CInt64(0)
           v78:CInt64[0] = Const CInt64(0)
           v79:BasicObject = ArrayAref v19, v78
           v80:CInt64[1] = Const CInt64(1)
           v81:BasicObject = ArrayAref v19, v80
           v82:ArrayExact = NewArray v79, v81
-          PushInlineFrame :target, v26 (0x1040), num_args=1
+          PushInlineFrame :target, v26 (0x1048), num_args=1
           PopInlineFrame
           Jump bb4(v82)
         bb7():
@@ -19224,16 +21054,16 @@ mod hir_opt_tests {
           v43:CBool = IsBitEqual v41, v42
           CondBranch v43, bb12(), bb13()
         bb12():
-          PatchPoint NoSingletonClass(CallerSplatA@0x1060)
-          v86:CInt64 = ArrayLength v19
-          v87:CInt64[1] = GuardBitEquals v86, CInt64(1) recompile
-          v88:CInt64 = CCall v19, :rb_jit_ruby2_keywords_splat_p@0x1010
-          v89:CInt64[0] = GuardBitEquals v88, CInt64(0)
-          PatchPoint MethodRedefined(CallerSplatA@0x1060, target@0x1011, cme:0x1068)
+          PatchPoint NoSingletonClass(CallerSplatA@0x1068)
+          PatchPoint MethodRedefined(CallerSplatA@0x1068, target@0x1010, cme:0x1070)
+          v87:CInt64 = ArrayLength v19
+          v88:CInt64[1] = GuardBitEquals v87, CInt64(1) recompile
+          v89:CInt64 = CCall v19, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v90:CInt64[0] = GuardBitEquals v89, CInt64(0)
           v91:CInt64[0] = Const CInt64(0)
           v92:BasicObject = ArrayAref v19, v91
           v93:ArrayExact = NewArray v92
-          PushInlineFrame :target, v40 (0x1090), num_args=1
+          PushInlineFrame :target, v40 (0x1098), num_args=1
           PopInlineFrame
           Jump bb4(v93)
         bb13():
@@ -19241,18 +21071,18 @@ mod hir_opt_tests {
           v48:CBool = IsBitEqual v41, v47
           CondBranch v48, bb14(), bb5()
         bb14():
-          PatchPoint NoSingletonClass(CallerSplatA@0x1060)
-          v97:CInt64 = ArrayLength v19
-          v98:CInt64[2] = GuardBitEquals v97, CInt64(2) recompile
-          v99:CInt64 = CCall v19, :rb_jit_ruby2_keywords_splat_p@0x1010
-          v100:CInt64[0] = GuardBitEquals v99, CInt64(0)
-          PatchPoint MethodRedefined(CallerSplatA@0x1060, target@0x1011, cme:0x1068)
+          PatchPoint NoSingletonClass(CallerSplatA@0x1068)
+          PatchPoint MethodRedefined(CallerSplatA@0x1068, target@0x1010, cme:0x1070)
+          v98:CInt64 = ArrayLength v19
+          v99:CInt64[2] = GuardBitEquals v98, CInt64(2) recompile
+          v100:CInt64 = CCall v19, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v101:CInt64[0] = GuardBitEquals v100, CInt64(0)
           v102:CInt64[0] = Const CInt64(0)
           v103:BasicObject = ArrayAref v19, v102
           v104:CInt64[1] = Const CInt64(1)
           v105:BasicObject = ArrayAref v19, v104
           v106:ArrayExact = NewArray v103, v105
-          PushInlineFrame :target, v40 (0x1090), num_args=1
+          PushInlineFrame :target, v40 (0x1098), num_args=1
           PopInlineFrame
           Jump bb4(v106)
         bb5():
@@ -19279,7 +21109,35 @@ mod hir_opt_tests {
             test([], [0, 20])
             test(CallerSplatFetch.new, [4])
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_splat_guards(&function, &[1, 2]);
+        let calls = hir_iseq_call_args(&function, get_method_iseq("CallerSplatFetch.new", "fetch"));
+        assert_eq!(calls.len(), 2);
+        let mut lengths = vec![];
+        for args in calls {
+            assert_eq!(args.len(), 1);
+            let Insn::NewArray { elements, .. } = function.find(args[0]) else { panic!("expected packed rest arguments") };
+            lengths.push(elements.len());
+            for (index, &arg) in elements.iter().enumerate() {
+                assert_hir_splat_element(&function, arg, index as i64);
+            }
+        }
+        lengths.sort_unstable();
+        assert_eq!(lengths, vec![1, 2]);
+        let sends: Vec<_> = dispatch_chain_insns(&function).filter_map(|insn| match insn {
+            Insn::Send { recv, cd, args, reason, .. } => {
+                assert_eq!(ruby_call_method_name(*cd), "fetch");
+                assert_eq!(args.len(), 1);
+                assert!(matches!(function.find(args[0]), Insn::ToArray { .. }));
+                Some((function.type_of(*recv), *reason))
+            }
+            _ => None,
+        }).collect();
+        assert_eq!(sends.len(), 2);
+        assert!(sends.iter().any(|(ty, reason)| ty.is_subtype(types::ArrayExact) && *reason == ComplexArgPass));
+        assert!(sends.iter().any(|(_, reason)| *reason == SendPolymorphicFallback));
+        assert_eq!(dispatch_chain_insns(&function).filter(|insn| matches!(insn, Insn::CondBranch { .. })).count(), 2);
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:5:
         bb1():
           EntryPoint interpreter
@@ -19312,17 +21170,17 @@ mod hir_opt_tests {
           CondBranch v34, bb9(), bb10()
         bb9():
           PatchPoint NoSingletonClass(CallerSplatFetch@0x1008)
-          v53:CInt64 = ArrayLength v19
-          v54:CInt64[2] = GuardBitEquals v53, CInt64(2) recompile
-          v55:CInt64 = CCall v19, :rb_jit_ruby2_keywords_splat_p@0x1010
-          v56:CInt64[0] = GuardBitEquals v55, CInt64(0)
-          PatchPoint MethodRedefined(CallerSplatFetch@0x1008, fetch@0x1011, cme:0x1018)
+          PatchPoint MethodRedefined(CallerSplatFetch@0x1008, fetch@0x1010, cme:0x1018)
+          v54:CInt64 = ArrayLength v19
+          v55:CInt64[2] = GuardBitEquals v54, CInt64(2) recompile
+          v56:CInt64 = CCall v19, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v57:CInt64[0] = GuardBitEquals v56, CInt64(0)
           v58:CInt64[0] = Const CInt64(0)
           v59:BasicObject = ArrayAref v19, v58
           v60:CInt64[1] = Const CInt64(1)
           v61:BasicObject = ArrayAref v19, v60
           v62:ArrayExact = NewArray v59, v61
-          PushInlineFrame :fetch, v31 (0x1040), num_args=1
+          PushInlineFrame :fetch, v31 (0x1048), num_args=1
           PopInlineFrame
           Jump bb4(v62)
         bb10():
@@ -19331,15 +21189,15 @@ mod hir_opt_tests {
           CondBranch v39, bb11(), bb5()
         bb11():
           PatchPoint NoSingletonClass(CallerSplatFetch@0x1008)
-          v66:CInt64 = ArrayLength v19
-          v67:CInt64[1] = GuardBitEquals v66, CInt64(1) recompile
-          v68:CInt64 = CCall v19, :rb_jit_ruby2_keywords_splat_p@0x1010
-          v69:CInt64[0] = GuardBitEquals v68, CInt64(0)
-          PatchPoint MethodRedefined(CallerSplatFetch@0x1008, fetch@0x1011, cme:0x1018)
+          PatchPoint MethodRedefined(CallerSplatFetch@0x1008, fetch@0x1010, cme:0x1018)
+          v67:CInt64 = ArrayLength v19
+          v68:CInt64[1] = GuardBitEquals v67, CInt64(1) recompile
+          v69:CInt64 = CCall v19, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v70:CInt64[0] = GuardBitEquals v69, CInt64(0)
           v71:CInt64[0] = Const CInt64(0)
           v72:BasicObject = ArrayAref v19, v71
           v73:ArrayExact = NewArray v72
-          PushInlineFrame :fetch, v31 (0x1040), num_args=1
+          PushInlineFrame :fetch, v31 (0x1048), num_args=1
           PopInlineFrame
           Jump bb4(v73)
         bb5():
@@ -19366,7 +21224,25 @@ mod hir_opt_tests {
             end
             test([3])
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_splat_guards(&function, &[1]);
+        let calls = hir_iseq_call_args(&function, get_method_iseq("self", "foo"));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].len(), 1);
+        assert_hir_splat_element(&function, calls[0][0], 0);
+        let reasons: Vec<_> = dispatch_chain_insns(&function).filter_map(|insn| match insn {
+            Insn::Send { cd, args, reason, .. } => {
+                assert_eq!(ruby_call_method_name(*cd), "foo");
+                assert_eq!(args.len(), 1);
+                assert!(matches!(function.find(args[0]), Insn::ToArray { .. }));
+                Some(*reason)
+            }
+            _ => None,
+        }).collect();
+        assert_eq!(reasons.len(), 2);
+        assert!(reasons.contains(&ArgcParamMismatch), "the observed invalid arity must keep Ruby's error path");
+        assert!(reasons.contains(&ComplexArgPass), "unobserved lengths must keep the original splat call");
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:3:
         bb1():
           EntryPoint interpreter
@@ -19405,16 +21281,16 @@ mod hir_opt_tests {
           CondBranch v34, bb8(), bb5()
         bb8():
           IncrCounter caller_splat_profile_polymorphic
-          v51:CInt64 = ArrayLength v21
-          v52:CInt64[1] = GuardBitEquals v51, CInt64(1) recompile
-          v53:CInt64 = CCall v21, :rb_jit_ruby2_keywords_splat_p@0x1001
-          v54:CInt64[0] = GuardBitEquals v53, CInt64(0)
-          IncrCounter caller_splat_optimized
           PatchPoint MethodRedefined(Object@0x1008, foo@0x1010, cme:0x1018)
-          v57:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v52:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v53:CInt64 = ArrayLength v21
+          v54:CInt64[1] = GuardBitEquals v53, CInt64(1) recompile
+          v55:CInt64 = CCall v21, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v56:CInt64[0] = GuardBitEquals v55, CInt64(0)
+          IncrCounter caller_splat_optimized
           v58:CInt64[0] = Const CInt64(0)
           v59:BasicObject = ArrayAref v21, v58
-          PushInlineFrame :foo, v57 (0x1040), num_args=1
+          PushInlineFrame :foo, v52 (0x1048), num_args=1
           IncrCounter inline_iseq_optimized_send_count
           IncrCounter zjit_insn_count
           IncrCounter zjit_insn_count
@@ -19423,8 +21299,10 @@ mod hir_opt_tests {
         bb5():
           IncrCounter caller_splat_profile_polymorphic
           IncrCounter complex_arg_pass_caller_splat
+          IncrCounter send_direct_fallback_context_send
           IncrCounter caller_splat_profile_polymorphic
           IncrCounter complex_arg_pass_caller_splat
+          IncrCounter send_direct_fallback_context_send
           v38:BasicObject = Send v11, :foo, v21 # SendFallbackReason: Complex argument passing
           Jump bb4(v38)
         bb4(v26:BasicObject):
@@ -19462,7 +21340,29 @@ mod hir_opt_tests {
 
         // The next version dispatches both accumulated lengths, rather than
         // repeating the monomorphic guard that rejected the second length.
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_splat_guards(&function, &[1, 2]);
+        let calls = hir_iseq_call_args(&function, get_method_iseq("self", "foo"));
+        assert_eq!(calls.len(), 2);
+        let mut lengths = vec![];
+        for args in calls {
+            assert_eq!(args.len(), 1);
+            let Insn::NewArray { elements, .. } = function.find(args[0]) else { panic!("expected packed rest arguments") };
+            lengths.push(elements.len());
+            for (index, &arg) in elements.iter().enumerate() {
+                assert_hir_splat_element(&function, arg, index as i64);
+            }
+        }
+        lengths.sort_unstable();
+        assert_eq!(lengths, vec![1, 2]);
+        assert_eq!(dispatch_chain_insns(&function).filter(|insn| matches!(insn, Insn::CondBranch { .. })).count(), 2);
+        let (_, args, state) = assert_hir_single_fallback(&function, "foo", ComplexArgPass, 1, None);
+        assert!(matches!(function.find(args[0]), Insn::ToArray { .. }));
+        let frame = function.frame_state(state);
+        let payload = crate::payload::get_iseq_payload_ptr(frame.iseq);
+        assert!(!payload.is_null());
+        assert!(unsafe { (*payload).profile.get_splat_length_summary(frame.insn_idx()) }.unwrap().is_skewed_polymorphic());
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:5:
         bb1():
           EntryPoint interpreter
@@ -19490,17 +21390,17 @@ mod hir_opt_tests {
           CondBranch v29, bb6(), bb7()
         bb6():
           IncrCounter caller_splat_profile_skewed_polymorphic
-          v49:CInt64 = ArrayLength v21
-          v50:CInt64[1] = GuardBitEquals v49, CInt64(1) recompile
-          v51:CInt64 = CCall v21, :rb_jit_ruby2_keywords_splat_p@0x1001
-          v52:CInt64[0] = GuardBitEquals v51, CInt64(0)
-          IncrCounter caller_splat_optimized
           PatchPoint MethodRedefined(Object@0x1008, foo@0x1010, cme:0x1018)
-          v55:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v50:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v51:CInt64 = ArrayLength v21
+          v52:CInt64[1] = GuardBitEquals v51, CInt64(1) recompile
+          v53:CInt64 = CCall v21, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v54:CInt64[0] = GuardBitEquals v53, CInt64(0)
+          IncrCounter caller_splat_optimized
           v56:CInt64[0] = Const CInt64(0)
           v57:BasicObject = ArrayAref v21, v56
           v58:ArrayExact = NewArray v57
-          PushInlineFrame :foo, v55 (0x1040), num_args=1
+          PushInlineFrame :foo, v50 (0x1048), num_args=1
           IncrCounter inline_iseq_optimized_send_count
           IncrCounter zjit_insn_count
           IncrCounter zjit_insn_count
@@ -19512,19 +21412,19 @@ mod hir_opt_tests {
           CondBranch v34, bb8(), bb5()
         bb8():
           IncrCounter caller_splat_profile_skewed_polymorphic
-          v62:CInt64 = ArrayLength v21
-          v63:CInt64[2] = GuardBitEquals v62, CInt64(2) recompile
-          v64:CInt64 = CCall v21, :rb_jit_ruby2_keywords_splat_p@0x1001
-          v65:CInt64[0] = GuardBitEquals v64, CInt64(0)
-          IncrCounter caller_splat_optimized
           PatchPoint MethodRedefined(Object@0x1008, foo@0x1010, cme:0x1018)
-          v68:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v63:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v64:CInt64 = ArrayLength v21
+          v65:CInt64[2] = GuardBitEquals v64, CInt64(2) recompile
+          v66:CInt64 = CCall v21, :rb_jit_ruby2_keywords_splat_p@0x1040
+          v67:CInt64[0] = GuardBitEquals v66, CInt64(0)
+          IncrCounter caller_splat_optimized
           v69:CInt64[0] = Const CInt64(0)
           v70:BasicObject = ArrayAref v21, v69
           v71:CInt64[1] = Const CInt64(1)
           v72:BasicObject = ArrayAref v21, v71
           v73:ArrayExact = NewArray v70, v72
-          PushInlineFrame :foo, v68 (0x1040), num_args=1
+          PushInlineFrame :foo, v63 (0x1048), num_args=1
           IncrCounter inline_iseq_optimized_send_count
           IncrCounter zjit_insn_count
           IncrCounter zjit_insn_count
@@ -19533,8 +21433,10 @@ mod hir_opt_tests {
         bb5():
           IncrCounter caller_splat_profile_skewed_polymorphic
           IncrCounter complex_arg_pass_caller_splat
+          IncrCounter send_direct_fallback_context_send
           IncrCounter caller_splat_profile_skewed_polymorphic
           IncrCounter complex_arg_pass_caller_splat
+          IncrCounter send_direct_fallback_context_send
           v38:BasicObject = Send v11, :foo, v21 # SendFallbackReason: Complex argument passing
           Jump bb4(v38)
         bb4(v26:BasicObject):
@@ -19560,7 +21462,16 @@ mod hir_opt_tests {
         // Trigger the length guard enough times to recompile under the
         // no-side-exits policy.
         eval("50.times { test([1, 2]) }");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert!(function.policy.no_side_exits);
+        let (_, args, _) = assert_hir_single_fallback(&function, "foo", ComplexArgPass, 1, None);
+        assert!(matches!(function.find(args[0]), Insn::ToArray { .. }));
+        assert_hir_splat_guards(&function, &[]);
+        assert!(hir_iseq_call_args(&function, get_method_iseq("self", "foo")).is_empty());
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn,
+            Insn::SideExit { .. } | Insn::GuardBitEquals { .. } | Insn::GuardType { .. }
+        )));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:3:
         bb1():
           EntryPoint interpreter
@@ -19584,6 +21495,7 @@ mod hir_opt_tests {
           IncrCounter zjit_insn_count
           IncrCounter caller_splat_profile_skewed_polymorphic
           IncrCounter complex_arg_pass_caller_splat
+          IncrCounter send_direct_fallback_context_send
           v26:BasicObject = Send v11, :foo, v21 # SendFallbackReason: Complex argument passing
           PatchPoint NoEPEscape(test)
           IncrCounter zjit_insn_count
@@ -19605,7 +21517,24 @@ mod hir_opt_tests {
             test([1])
             test([2])
         ");
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_splat_guards(&function, &[1]);
+        let calls = hir_iseq_call_args(&function, get_method_iseq("self", "target"));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].len(), 1);
+        let value = hir_return_value(&function);
+        assert_eq!(value, calls[0][0]);
+        assert_hir_splat_element(&function, value, 0);
+        let stores: Vec<_> = dispatch_chain_insns(&function).filter_map(|insn| match insn {
+            Insn::HashAset { hash, key, val, .. } => Some((*hash, *key, *val)),
+            _ => None,
+        }).collect();
+        assert_eq!(stores.len(), 1);
+        assert!(matches!(function.find(stores[0].0), Insn::NewHash { .. }));
+        assert_hir_const(&function, stores[0].1, eval(":value"));
+        assert_eq!(function.find_id(stores[0].2), value, "Hash#[]= must consume and return the specialized call result");
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::Send { .. })));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:4:
         bb1():
           EntryPoint interpreter
@@ -19626,15 +21555,15 @@ mod hir_opt_tests {
           v26:StaticSymbol[:value] = Const Value(VALUE(0x1008))
           v30:ArrayExact = ToArray v12
           PatchPoint NoEPEscape(test)
-          v49:CInt64 = ArrayLength v30
-          v50:CInt64[1] = GuardBitEquals v49, CInt64(1) recompile
-          v51:CInt64 = CCall v30, :rb_jit_ruby2_keywords_splat_p@0x1010
-          v52:CInt64[0] = GuardBitEquals v51, CInt64(0)
-          PatchPoint MethodRedefined(Object@0x1018, target@0x1020, cme:0x1028)
-          v54:ObjectSubclass[class_exact*:Object@VALUE(0x1018)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1018)] recompile
+          PatchPoint MethodRedefined(Object@0x1010, target@0x1018, cme:0x1020)
+          v50:ObjectSubclass[class_exact*:Object@VALUE(0x1010)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1010)] recompile
+          v51:CInt64 = ArrayLength v30
+          v52:CInt64[1] = GuardBitEquals v51, CInt64(1) recompile
+          v53:CInt64 = CCall v30, :rb_jit_ruby2_keywords_splat_p@0x1048
+          v54:CInt64[0] = GuardBitEquals v53, CInt64(0)
           v55:CInt64[0] = Const CInt64(0)
           v56:BasicObject = ArrayAref v30, v55
-          PushInlineFrame :target, v54 (0x1050), num_args=1
+          PushInlineFrame :target, v50 (0x1050), num_args=1
           PopInlineFrame
           PatchPoint NoEPEscape(test)
           PatchPoint NoSingletonClass(Hash@0x1070)
@@ -20692,7 +22621,23 @@ mod hir_opt_tests {
 
             4.times { test(nil) }
         "#);
-        assert_snapshot!(hir_string("test"), @"
+        let object = eval("NULL");
+        let callee = get_method_iseq("NULL", "!=");
+        let function = dispatch_chain_hir("test");
+        let calls = hir_iseq_call_args(&function, callee);
+        assert_eq!(calls.len(), 1, "BasicObject#!= must still inline");
+        assert_eq!(calls[0].len(), 1);
+        let (recv, args, state) = assert_hir_single_fallback(&function, "==", SendPolymorphicFallback, 1, None);
+        assert_hir_const(&function, recv, object);
+        assert_eq!(args, calls[0], "terminal dispatch must retain the caller's argument");
+        let frame = function.frame_state(state);
+        assert_eq!(frame.iseq, callee);
+        assert_eq!(frame.stack().copied().collect::<Vec<_>>(), vec![recv, args[0]]);
+        let Insn::BoolNegate { val } = function.find(hir_return_value(&function)) else { panic!("!= must negate the generic == result") };
+        assert!(matches!(function.find(val), Insn::Send { reason: SendPolymorphicFallback, .. }));
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::SendDirect(_) | Insn::IsBitEqual { .. })));
+        assert_eq!(eval("test(nil) && !test(NULL)"), Qtrue);
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:8:
         bb1():
           EntryPoint interpreter
@@ -20713,10 +22658,8 @@ mod hir_opt_tests {
           PatchPoint NoSingletonClass(Object@0x1018)
           PatchPoint MethodRedefined(Object@0x1018, !=@0x1020, cme:0x1028)
           PushInlineFrame :!=, v16 (0x1050), num_args=1
-          PatchPoint MethodRedefined(Object@0x1018, ==@0x1070, cme:0x1078)
-          v70:CBool = IsBitEqual v16, v10
-          v71:BoolExact = BoxBool v70
-          v55:BoolExact = BoolNegate v71
+          v52:BasicObject = Send v16, :==, v10 # SendFallbackReason: Send: polymorphic fallback
+          v55:BoolExact = BoolNegate v52
           PatchPoint NoEPEscape(!=)
           PopInlineFrame
           CheckInterrupts
@@ -25095,7 +27038,17 @@ mod hir_opt_tests {
             test(true, block)
         ");
 
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        let (_, args, state) = assert_hir_single_fallback(&function, "passthrough_recompile_blockarg", ComplexArgPass, 2, Some(BlockHandler::BlockArg));
+        assert_hir_const(&function, args[0], VALUE::fixnum_from_usize(42));
+        assert_eq!(Some(args[1]), function.frame_state(state).locals().nth(1).copied());
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn,
+            Insn::SideExit { reason, .. } if matches!(**reason, SideExitReason::NoProfileSend)
+        )), "reprofiling must make the previously cold send executable");
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn,
+            Insn::GuardType { guard_type, .. } if guard_type.exact_ruby_class() == Some(unsafe { rb_cProc })
+        )), "a rejected blockarg plan must leave the original operand unguarded");
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:7:
         bb1():
           EntryPoint interpreter
@@ -25117,8 +27070,7 @@ mod hir_opt_tests {
         bb5():
           v21:Truthy = RefineType v12, Truthy
           v25:Fixnum[42] = Const Value(42)
-          v48:ObjectSubclass[class_exact:Proc] = GuardType v13, ObjectSubclass[class_exact:Proc] recompile
-          v28:BasicObject = Send v11, &block, :passthrough_recompile_blockarg, v25, v48 # SendFallbackReason: Complex argument passing
+          v28:BasicObject = Send v11, &block, :passthrough_recompile_blockarg, v25, v13 # SendFallbackReason: Complex argument passing
           PatchPoint NoEPEscape(test)
           CheckInterrupts
           Return v28
@@ -26203,7 +28155,16 @@ mod hir_opt_tests {
 
         ");
 
-        let intermediate_hir = hir_string_proc("C.new.method(:f)");
+        let iseq = crate::cruby::with_rubyvm(|| get_method_iseq("C.new", "f"));
+        unsafe { crate::cruby::rb_zjit_profile_disable(iseq) };
+        let mut intermediate_hir = iseq_to_hir(iseq).unwrap();
+        intermediate_hir.optimize();
+        intermediate_hir.validate().unwrap();
+        let Insn::FixnumAdd { left, right, .. } = intermediate_hir.find(hir_return_value(&intermediate_hir)) else { panic!("expected the initial Fixnum fast path") };
+        assert_hir_const(&intermediate_hir, right, VALUE::fixnum_from_usize(1));
+        assert!(matches!(intermediate_hir.find(left), Insn::GuardType { guard_type, recompile: Some(_), .. } if guard_type.is_subtype(types::Fixnum)));
+        assert!(!dispatch_chain_insns(&intermediate_hir).any(|insn| matches!(insn, Insn::Send { .. } | Insn::FloatAdd { .. })));
+        let initial_hir = hir_string_function(&intermediate_hir);
 
         eval("
             # Supposed to be the same as the earlier Ruby method in this test
@@ -26213,9 +28174,38 @@ mod hir_opt_tests {
             # Do this enough times to cause a recompilation
             num_to_compile.times { c.f(1.5) }
         ");
-        let final_hir = hir_string_proc("C.new.method(:f)");
-
-        assert_snapshot!(format!("{intermediate_hir}\n{final_hir}"), @"
+        unsafe { crate::cruby::rb_zjit_profile_disable(iseq) };
+        let mut final_hir = iseq_to_hir(iseq).unwrap();
+        final_hir.optimize();
+        final_hir.validate().unwrap();
+        assert_eq!(dispatch_chain_insns(&final_hir).filter(|insn| matches!(insn, Insn::FixnumAdd { .. })).count(), 1);
+        assert_eq!(dispatch_chain_insns(&final_hir).filter(|insn| matches!(insn, Insn::FloatAdd { .. })).count(), 1);
+        let branches: Vec<_> = dispatch_chain_insns(&final_hir).filter_map(|insn| match insn {
+            Insn::CondBranchHasType(data) => Some(data),
+            _ => None,
+        }).collect();
+        assert_eq!(branches.len(), 2);
+        assert!(branches.iter().any(|branch| branch.expected.bit_equal(types::Fixnum)));
+        assert!(branches.iter().any(|branch| branch.expected.bit_equal(types::Flonum)));
+        let (recv, args, state) = assert_hir_single_fallback(&final_hir, "+", SendPolymorphicFallback, 1, None);
+        assert_hir_const(&final_hir, args[0], VALUE::fixnum_from_usize(1));
+        let frame = final_hir.frame_state(state);
+        assert_eq!(frame.locals().next().copied(), Some(recv));
+        assert_eq!(frame.stack().copied().collect::<Vec<_>>(), vec![recv, args[0]]);
+        assert!(branches.iter().all(|branch| final_hir.find_id(branch.val) == recv));
+        // Both specialized arms and the generic tail must feed the value stored
+        // into @a and returned, rather than replaying the arithmetic on a miss.
+        let result = hir_return_value(&final_hir);
+        let ivar = unsafe { rb_get_symbol_id(eval(":@a")) };
+        assert!(dispatch_chain_insns(&final_hir).any(|insn| matches!(insn,
+            Insn::SetIvar { id, val, .. } if *id == ivar && final_hir.find_id(*val) == result
+        )));
+        assert!(dispatch_chain_insns(&final_hir).any(|insn| matches!(insn,
+            Insn::StoreField { id: FieldName::Id(id), val, .. } if *id == ivar && final_hir.find_id(*val) == result
+        )));
+        assert_eq!(eval("c = C.new; c.f(1) == 2 && c.f(1.5) == 2.5 && c.instance_variable_get(:@a) == 2.5"), Qtrue);
+        assert_snapshot!(format!("Before recompilation:\n{initial_hir}\nAfter recompilation:\n{}", hir_string_function(&final_hir)), @"
+        Before recompilation:
         fn f@<compiled>:4:
         bb1():
           EntryPoint interpreter
@@ -26271,6 +28261,7 @@ mod hir_opt_tests {
           CheckInterrupts
           Return v73
 
+        After recompilation:
         fn f@<compiled>:4:
         bb1():
           EntryPoint interpreter
@@ -26284,7 +28275,7 @@ mod hir_opt_tests {
           v8:BasicObject = LoadArg :x@1
           Jump bb3(v7, v8)
         bb3(v11:HeapBasicObject, v12:BasicObject):
-          v92:NilClass = Const Value(nil)
+          v88:NilClass = Const Value(nil)
           v17:Fixnum[1] = Const Value(1)
           v20:CShape = LoadField v11, :shape_id@0x1001
           v21:CShape[0x1002] = Const CShape(0x1002)
@@ -26322,11 +28313,9 @@ mod hir_opt_tests {
           v87:Float = FloatAdd v54, v43
           Jump bb9(v87)
         bb10():
-          PatchPoint MethodRedefined(Integer@0x1008, +@0x1010, cme:0x1018)
-          v90:Fixnum = GuardType v12, Fixnum recompile
-          v91:Fixnum = FixnumAdd v90, v43
-          Jump bb9(v91)
-        bb9(v46:Float|Fixnum):
+          v57:BasicObject = Send v12, :+, v43 # SendFallbackReason: Send: polymorphic fallback
+          Jump bb9(v57)
+        bb9(v46:BasicObject):
           v65:CShape = LoadField v11, :shape_id@0x1001
           v66:CShape[0x1002] = Const CShape(0x1002)
           v67:CBool = IsBitEqual v65, v66
@@ -28333,7 +30322,29 @@ mod hir_opt_tests {
 
             test(A.new); test(B.new)
         "#);
-        assert_snapshot!(hir_string("test"), @"
+        let function = dispatch_chain_hir("test");
+        assert_hir_nil_block_guards(&function, 2);
+        let classes = [eval("A"), eval("B")];
+        let branches: Vec<_> = dispatch_chain_insns(&function).filter_map(|insn| match insn {
+            Insn::CondBranchHasType(data) => data.expected.exact_ruby_class(),
+            _ => None,
+        }).collect();
+        assert_eq!(branches.len(), 2);
+        for klass in classes {
+            assert!(branches.contains(&klass));
+        }
+        for value in [42, 43] {
+            assert!(dispatch_chain_insns(&function).any(|insn| match insn {
+                Insn::Jump(edge) => edge.args.iter().any(|&arg| matches!(function.find(arg),
+                    Insn::Const { val: Const::Value(actual) } if actual == VALUE::fixnum_from_usize(value)
+                )),
+                _ => false,
+            }), "each receiver arm must contribute its own constant result");
+        }
+        let (_, args, state) = assert_hir_single_fallback(&function, "foo", SendPolymorphicFallback, 1, Some(BlockHandler::BlockArg));
+        assert_eq!(function.frame_state(state).stack().last().copied(), Some(args[0]));
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::SendDirect(_))));
+        assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:9:
         bb1():
           EntryPoint interpreter
@@ -28394,17 +30405,17 @@ mod hir_opt_tests {
         bb6(v18:BasicObject, v19:BasicObject):
           CondBranchHasType v12, ObjectSubclass[class_exact:B], bb15(), bb16()
         bb15():
-          v74:NilClass = GuardBitEquals v18, Value(nil) recompile
           PatchPoint NoSingletonClass(B@0x1010)
           PatchPoint MethodRedefined(B@0x1010, foo@0x1018, cme:0x1020)
+          v76:NilClass = GuardBitEquals v18, Value(nil) recompile
           v78:Fixnum[43] = Const Value(43)
           Jump bb14(v78)
         bb16():
           CondBranchHasType v12, ObjectSubclass[class_exact:A], bb17(), bb18()
         bb17():
-          v79:NilClass = GuardBitEquals v18, Value(nil) recompile
           PatchPoint NoSingletonClass(A@0x1048)
           PatchPoint MethodRedefined(A@0x1048, foo@0x1018, cme:0x1050)
+          v81:NilClass = GuardBitEquals v18, Value(nil) recompile
           v83:Fixnum[42] = Const Value(42)
           Jump bb14(v83)
         bb18():

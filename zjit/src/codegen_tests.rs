@@ -51,6 +51,32 @@ fn with_dispatch_profiles<T>(mut body: impl FnMut() -> T) -> T {
 }
 
 #[track_caller]
+fn assert_compiled_dispatch(entry: &str, target_class: &str, target_method: &str, require_inline: bool, block_guard: bool) {
+    let target = get_instance_method_iseq(target_class, target_method);
+    let iseq = get_method_iseq("self", entry);
+    assert!(get_or_create_iseq_payload(iseq).versions.iter()
+        .any(|version| matches!(unsafe { &version.as_ref().status }, IseqStatus::Compiled(_))));
+    unsafe { rb_zjit_profile_disable(iseq) };
+    let mut function = iseq_to_hir(iseq).unwrap();
+    function.optimize();
+    function.validate().unwrap();
+    let mut target_seen = false;
+    let mut guard_seen = false;
+    for block in function.reverse_post_order() {
+        for &id in function.block(block).insns() {
+            match function.find_ref(id) {
+                Insn::SendDirect(data) if !require_inline && data.iseq == target => target_seen = true,
+                Insn::PushInlineFrame { iseq, .. } if *iseq == target => target_seen = true,
+                Insn::GuardBitEquals { reason, .. } if matches!(**reason, crate::hir::SideExitReason::BlockArgNotNil) => guard_seen = true,
+                _ => {}
+            }
+        }
+    }
+    assert!(target_seen, "expected compiled dispatch to {target_class}#{target_method}");
+    assert!(!block_guard || guard_seen, "expected a pre-entry block guard");
+}
+
+#[track_caller]
 fn check_missing_dispatch_mutation(setup: &str, change: &str, expected: &str) {
     with_dispatch_profiles(|| {
         set_inline_threshold(0);
@@ -170,11 +196,6 @@ fn test_dispatch_chain_normalized_stack_overflow_recovers() {
 
 #[test]
 fn test_dispatch_chain_name_id_preserves_mutation_and_does_not_intern() {
-    // Exercise the existing VM helper without adding a production Rust binding.
-    unsafe extern "C" {
-        fn rb_get_symbol_id(name: VALUE) -> ID;
-    }
-
     let inc = unsafe { rb_get_symbol_id(eval(":inc")) };
     let dec = unsafe { rb_get_symbol_id(eval(":dec")) };
     let first = eval("$dispatch_name = String.new('inc')");
@@ -275,6 +296,34 @@ fn test_dispatch_chain_mutable_string_and_coercion() {
             30.times { raise unless dispatch_name($target, DispatchCoercibleName.new) == 11 }
             [first, second, $conversions]
         "), "[11, 9, 30]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_selector_paths_preserve_live_values() {
+    with_dispatch_profiles(|| {
+        set_inline_threshold(0);
+        eval("
+            class DispatchSelectorPaths
+              def pair(left, right) = [left, right]
+            end
+            class DispatchSelectorString < String; end
+            def dispatch_selector_values(o, name, left, right)
+              before = left + 1
+              result = o.__send__(name, left, right)
+              [before, name, result, right]
+            end
+            $selector_target = DispatchSelectorPaths.new
+            $selector_names = [:pair, String.new('pair'), DispatchSelectorString.new('pair')]
+            100.times do
+              $selector_names.each { |name| dispatch_selector_values($selector_target, name, 7, 'right') }
+            end
+            GC.verify_compaction_references(expand_heap: true, toward: :empty)
+        ");
+        assert_eq!(assert_compiles_allowing_exits("
+            $selector_names.map { |name| dispatch_selector_values($selector_target, name, 7, 'right') }
+        "), "[[8, :pair, [7, \"right\"], \"right\"], [8, \"pair\", [7, \"right\"], \"right\"], [8, \"pair\", [7, \"right\"], \"right\"]]");
+        assert_compiled_dispatch("dispatch_selector_values", "DispatchSelectorPaths", "pair", false, false);
     });
 }
 
@@ -409,11 +458,14 @@ fn test_dispatch_chain_reflective_bailout_evaluates_arguments_once() {
             100.times { call.call($target, :inc, nil) }
             $calls = 0
         ");
+        assert_compiled_dispatch("entry", "DispatchSideEffects", "inc", false, true);
+        let exits = crate::state::ZJITState::get_counters().exit_block_arg_not_nil;
         assert_eq!(assert_compiles_allowing_exits("
             assigned = nil
             value = entry($target, :inc, proc { |x| assigned = x + 2 })
             [value, assigned, $calls]
         "), "[12, 12, 1]");
+        assert!(crate::state::ZJITState::get_counters().exit_block_arg_not_nil > exits);
     });
 }
 
@@ -439,9 +491,13 @@ fn test_dispatch_chain_reflective_inlined_exit_and_stack_recovery() {
             100.times { call.call($target, :inc, 10); recurse.call(2) }
             $calls = 0
         ");
+        assert_compiled_dispatch("entry", "DispatchRecursive", "inc", true, false);
+        let exits = crate::state::ZJITState::get_counters().exit_guard_type_failure;
         assert_eq!(assert_compiles_allowing_exits("
             [entry($target, :inc, DispatchExitValue.new), $calls]
         "), "[42, 1]");
+        assert!(crate::state::ZJITState::get_counters().exit_guard_type_failure > exits);
+        let overflows = crate::state::ZJITState::get_counters().exit_stackoverflow;
         assert_eq!(assert_compiles_allowing_exits("
             Fiber.new do
               overflow = false
@@ -453,6 +509,7 @@ fn test_dispatch_chain_reflective_inlined_exit_and_stack_recovery() {
               [overflow, $target.recurse(2)]
             end.resume
         "), "[true, 5]");
+        assert!(crate::state::ZJITState::get_counters().exit_stackoverflow > overflows);
     });
 }
 
@@ -789,11 +846,14 @@ fn test_dispatch_chain_missing_keywords_blocks_and_guard_bailout() {
             100.times { literal($proxy); call.call($proxy, nil) }
             $calls = 0
         ");
+        assert_compiled_dispatch("nil_block", "DispatchMissingArguments", "method_missing", false, true);
+        let exits = crate::state::ZJITState::get_counters().exit_block_arg_not_nil;
         assert_eq!(assert_compiles_allowing_exits("
             assigned = nil
             value = nil_block($proxy, proc { |x| assigned = x + 2 })
             [literal($proxy), value, assigned, $calls]
         "), "[[:inc, 10, 3, 11], [:inc, 10, 3, 12], 12, 1]");
+        assert!(crate::state::ZJITState::get_counters().exit_block_arg_not_nil > exits);
     });
 }
 
@@ -820,9 +880,14 @@ fn test_dispatch_chain_missing_stack_overflow_and_callee_exit() {
             100.times { call.call($proxy, 10); recurse.call($proxy, 2) }
             $calls = 0
         ");
+        assert_compiled_dispatch("entry", "DispatchMissingRecursive", "method_missing", true, false);
+        let exits = crate::state::ZJITState::get_counters().exit_guard_type_failure;
         assert_eq!(assert_compiles_allowing_exits("
             [entry($proxy, DispatchMissingExitValue.new), $calls]
         "), "[42, 1]");
+        assert!(crate::state::ZJITState::get_counters().exit_guard_type_failure > exits);
+        assert_compiled_dispatch("recursive_entry", "DispatchMissingRecursive", "method_missing", false, false);
+        let overflows = crate::state::ZJITState::get_counters().exit_stackoverflow;
         assert_eq!(assert_compiles_allowing_exits("
             Fiber.new do
               overflow = false
@@ -834,6 +899,7 @@ fn test_dispatch_chain_missing_stack_overflow_and_callee_exit() {
               [overflow, recursive_entry($proxy, 2)]
             end.resume
         "), "[true, 5]");
+        assert!(crate::state::ZJITState::get_counters().exit_stackoverflow > overflows);
     });
 }
 
@@ -920,6 +986,7 @@ fn test_dispatch_chain_public_send_private_handler_alias() {
             $proxy = DispatchPublicHandlerAlias.new
             100.times { entry($proxy) }
         ");
+        assert_compiled_dispatch("entry", "DispatchPublicHandlerAlias", "method_missing", false, false);
         assert_eq!(assert_compiles("entry($proxy)"), "[:inc, [10]]");
     });
 }
