@@ -11,6 +11,18 @@ mod hir_opt_tests {
         format!("{}", FunctionPrinter::without_snapshot(function))
     }
 
+    // Selector IDs depend on VM initialization order. Keep their names visible
+    // without pinning platform-specific numbers or redacting other integer constants.
+    fn hir_string_with_selector_names(function: &Function, names: &[&str]) -> String {
+        let mut hir = hir_string_function(function);
+        for name in names {
+            let id = rust_str_to_id(name).0;
+            hir = hir.replace(&format!("CUInt64[{id}]"), &format!("CUInt64[ID(:{name})]"));
+            hir = hir.replace(&format!("CUInt64({id})"), &format!("CUInt64(ID(:{name}))"));
+        }
+        hir
+    }
+
     #[track_caller]
     fn hir_string_proc(proc: &str) -> String {
         let iseq = crate::cruby::with_rubyvm(|| get_proc_iseq(proc));
@@ -24,6 +36,161 @@ mod hir_opt_tests {
     #[track_caller]
     fn hir_string(method: &str) -> String {
         hir_string_proc(&format!("{}.method(:{})", "self", method))
+    }
+
+
+    #[test]
+    fn test_dispatch_chain_name_id_only_folds_immutable_resolved_names() {
+        let hir = with_dispatch_chain_options(0, || {
+            eval("
+                class DispatchNameIdTarget
+                  def inc(x) = x + 1
+                end
+                def dispatch_fold_symbol(o, x) = o.__send__(:inc, x)
+                def dispatch_fold_string(o, name, x) = o.__send__(name, x)
+                def dispatch_fold_object(o, name, x) = o.__send__(name, x)
+                target = DispatchNameIdTarget.new
+                name = Object.new
+                128.times do
+                  raise unless dispatch_fold_symbol(target, 10) == 11
+                  raise unless dispatch_fold_string(target, String.new('inc'), 10) == 11
+                  begin
+                    dispatch_fold_object(target, name, 10)
+                    raise 'invalid selector unexpectedly succeeded'
+                  rescue TypeError
+                  end
+                end
+                class DispatchNameIdString < String; end
+                DISPATCH_FROZEN_NAME = String.new('inc').freeze
+                DISPATCH_FROZEN_SUBCLASS_NAME = DispatchNameIdString.new('inc').freeze
+                def dispatch_fold_frozen(o, x) = o.__send__(DISPATCH_FROZEN_NAME, x)
+                def dispatch_fold_frozen_subclass(o, x) = o.__send__(DISPATCH_FROZEN_SUBCLASS_NAME, x)
+                128.times do
+                  raise unless dispatch_fold_frozen(target, 10) == 11
+                  raise unless dispatch_fold_frozen_subclass(target, 10) == 11
+                end
+            ");
+            let snapshots = [
+                "dispatch_fold_symbol", "dispatch_fold_string", "dispatch_fold_object",
+                "dispatch_fold_frozen", "dispatch_fold_frozen_subclass",
+            ].map(|method| {
+                let function = dispatch_chain_hir(method);
+                hir_string_with_selector_names(&function, &["inc"])
+            });
+            snapshots.join("\n")
+        });
+        assert_snapshot!(hir, @"
+        fn dispatch_fold_symbol@<compiled>:5:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :o@0x1000
+          v4:BasicObject = LoadField v2, :x@0x1001
+          Jump bb3(v1, v3, v4)
+        bb2():
+          EntryPoint JIT(0)
+          v7:BasicObject = LoadArg :self@0
+          v8:BasicObject = LoadArg :o@1
+          v9:BasicObject = LoadArg :x@2
+          Jump bb3(v7, v8, v9)
+        bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
+          v18:StaticSymbol[:inc] = Const Value(VALUE(0x1008))
+          v21:BasicObject = Send v12, :__send__, v18, v13 # SendFallbackReason: Send: unsupported optimized method type Send
+          PatchPoint NoEPEscape(dispatch_fold_symbol)
+          CheckInterrupts
+          Return v21
+
+        fn dispatch_fold_string@<compiled>:6:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :o@0x1000
+          v4:BasicObject = LoadField v2, :name@0x1001
+          v5:BasicObject = LoadField v2, :x@0x1002
+          Jump bb3(v1, v3, v4, v5)
+        bb2():
+          EntryPoint JIT(0)
+          v8:BasicObject = LoadArg :self@0
+          v9:BasicObject = LoadArg :o@1
+          v10:BasicObject = LoadArg :name@2
+          v11:BasicObject = LoadArg :x@3
+          Jump bb3(v8, v9, v10, v11)
+        bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
+          v23:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+          PatchPoint NoEPEscape(dispatch_fold_string)
+          CheckInterrupts
+          Return v23
+
+        fn dispatch_fold_object@<compiled>:7:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :o@0x1000
+          v4:BasicObject = LoadField v2, :name@0x1001
+          v5:BasicObject = LoadField v2, :x@0x1002
+          Jump bb3(v1, v3, v4, v5)
+        bb2():
+          EntryPoint JIT(0)
+          v8:BasicObject = LoadArg :self@0
+          v9:BasicObject = LoadArg :o@1
+          v10:BasicObject = LoadArg :name@2
+          v11:BasicObject = LoadArg :x@3
+          Jump bb3(v8, v9, v10, v11)
+        bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
+          v23:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+          PatchPoint NoEPEscape(dispatch_fold_object)
+          CheckInterrupts
+          Return v23
+
+        fn dispatch_fold_frozen@<compiled>:22:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :o@0x1000
+          v4:BasicObject = LoadField v2, :x@0x1001
+          Jump bb3(v1, v3, v4)
+        bb2():
+          EntryPoint JIT(0)
+          v7:BasicObject = LoadArg :self@0
+          v8:BasicObject = LoadArg :o@1
+          v9:BasicObject = LoadArg :x@2
+          Jump bb3(v7, v8, v9)
+        bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
+          PatchPoint StableConstantNames(0x1008, DISPATCH_FROZEN_NAME)
+          v19:StringExact[VALUE(0x1010)] = Const Value(VALUE(0x1010))
+          PatchPoint NoEPEscape(dispatch_fold_frozen)
+          v24:BasicObject = Send v12, :__send__, v19, v13 # SendFallbackReason: Send: unsupported optimized method type Send
+          PatchPoint NoEPEscape(dispatch_fold_frozen)
+          CheckInterrupts
+          Return v24
+
+        fn dispatch_fold_frozen_subclass@<compiled>:23:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :o@0x1000
+          v4:BasicObject = LoadField v2, :x@0x1001
+          Jump bb3(v1, v3, v4)
+        bb2():
+          EntryPoint JIT(0)
+          v7:BasicObject = LoadArg :self@0
+          v8:BasicObject = LoadArg :o@1
+          v9:BasicObject = LoadArg :x@2
+          Jump bb3(v7, v8, v9)
+        bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
+          PatchPoint StableConstantNames(0x1008, DISPATCH_FROZEN_SUBCLASS_NAME)
+          v19:StringSubclass[VALUE(0x1010)] = Const Value(VALUE(0x1010))
+          PatchPoint NoEPEscape(dispatch_fold_frozen_subclass)
+          v24:BasicObject = Send v12, :__send__, v19, v13 # SendFallbackReason: Send: unsupported optimized method type Send
+          PatchPoint NoEPEscape(dispatch_fold_frozen_subclass)
+          CheckInterrupts
+          Return v24
+        ");
     }
 
     #[test]
@@ -50,6 +217,1289 @@ mod hir_opt_tests {
         // [self, obj, block]
         assert!(!new_array_stack_sizes.is_empty(), "{}", hir_string_function(&function));
         assert!(new_array_stack_sizes.iter().all(|&size| size == 3), "{new_array_stack_sizes:?}");
+    }
+
+    #[test]
+    fn test_dispatch_chain_original_and_normalized_frame_states() {
+        eval("
+            def dispatch_frame_target(x, *rest, k:) = [x, rest, k]
+            def dispatch_frame_entry(x, block) = dispatch_frame_target(x, 2, k: 3, &block)
+            dispatch_frame_entry(1, nil)
+            dispatch_frame_entry(1, nil)
+        ");
+        let old_threshold = get_option!(inline_threshold);
+        let mut snapshots = Vec::new();
+        for threshold in [0, 100] {
+            set_inline_threshold(threshold);
+            let function = dispatch_chain_hir("dispatch_frame_entry");
+            snapshots.push(format!("inline_threshold={threshold}:\n{}", hir_string_function(&function)));
+        }
+        set_inline_threshold(old_threshold);
+        assert_snapshot!(snapshots.join("\n"), @"
+        inline_threshold=0:
+        fn dispatch_frame_entry@<compiled>:3:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :x@0x1000
+          v4:BasicObject = LoadField v2, :block@0x1001
+          Jump bb3(v1, v3, v4)
+        bb2():
+          EntryPoint JIT(0)
+          v7:BasicObject = LoadArg :self@0
+          v8:BasicObject = LoadArg :x@1
+          v9:BasicObject = LoadArg :block@2
+          Jump bb3(v7, v8, v9)
+        bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
+          v19:Fixnum[2] = Const Value(2)
+          v21:Fixnum[3] = Const Value(3)
+          v32:NilClass = GuardBitEquals v13, Value(nil) recompile
+          PatchPoint MethodRedefined(Object@0x1008, dispatch_frame_target@0x1010, cme:0x1018)
+          v35:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v36:ArrayExact = NewArray v19
+          v38:BasicObject = SendDirect v35, 0x0, :dispatch_frame_target (0x1040), v12, v36, v21
+          PatchPoint NoEPEscape(dispatch_frame_entry)
+          CheckInterrupts
+          Return v38
+
+        inline_threshold=100:
+        fn dispatch_frame_entry@<compiled>:3:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :x@0x1000
+          v4:BasicObject = LoadField v2, :block@0x1001
+          Jump bb3(v1, v3, v4)
+        bb2():
+          EntryPoint JIT(0)
+          v7:BasicObject = LoadArg :self@0
+          v8:BasicObject = LoadArg :x@1
+          v9:BasicObject = LoadArg :block@2
+          Jump bb3(v7, v8, v9)
+        bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
+          v19:Fixnum[2] = Const Value(2)
+          v21:Fixnum[3] = Const Value(3)
+          v32:NilClass = GuardBitEquals v13, Value(nil) recompile
+          PatchPoint MethodRedefined(Object@0x1008, dispatch_frame_target@0x1010, cme:0x1018)
+          v35:ObjectSubclass[class_exact*:Object@VALUE(0x1008)] = GuardType v11, ObjectSubclass[class_exact*:Object@VALUE(0x1008)] recompile
+          v36:ArrayExact = NewArray v19
+          v55:Fixnum[0] = Const Value(0)
+          PushInlineFrame :dispatch_frame_target, v35 (0x1040), num_args=3
+          v51:ArrayExact = NewArray v12, v36, v21
+          PopInlineFrame
+          PatchPoint NoEPEscape(dispatch_frame_entry)
+          CheckInterrupts
+          Return v51
+        ");
+    }
+
+    fn with_dispatch_chain_options<T>(inline_threshold: InlineThreshold, mut test: impl FnMut() -> T) -> T {
+        crate::cruby::with_rubyvm(|| {
+            let old_call_threshold = unsafe { rb_zjit_call_threshold };
+            let old_num_profiles = get_option!(num_profiles);
+            let old_inline_threshold = get_option!(inline_threshold);
+            set_call_threshold(20);
+            set_num_profiles(16);
+            set_inline_threshold(inline_threshold);
+            let result = test();
+            set_inline_threshold(old_inline_threshold);
+            set_num_profiles(old_num_profiles);
+            set_call_threshold(old_call_threshold);
+            result
+        })
+    }
+
+    fn dispatch_chain_hir(method: &str) -> Function {
+        let iseq = get_method_iseq("self", method);
+        unsafe { crate::cruby::rb_zjit_profile_disable(iseq) };
+        let mut function = iseq_to_hir(iseq).unwrap();
+        function.optimize();
+        function.validate().unwrap();
+        function
+    }
+
+
+    #[test]
+    fn test_dispatch_chain_dynamic_dunder_send() {
+        let hir = with_dispatch_chain_options(0, || {
+            eval("
+                class DispatchDynamicTarget
+                  def inc(x) = x + 1
+                  def dec(x) = x - 1
+                end
+                def dispatch_dynamic(o, name, x) = o.__send__(name, x)
+                o = DispatchDynamicTarget.new
+                128.times { |i| dispatch_dynamic(o, i.even? ? :inc : :dec, 10) }
+            ");
+            let function = dispatch_chain_hir("dispatch_dynamic");
+            hir_string_with_selector_names(&function, &["inc", "dec"])
+        });
+        assert_snapshot!(hir, @"
+        fn dispatch_dynamic@<compiled>:6:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :o@0x1000
+          v4:BasicObject = LoadField v2, :name@0x1001
+          v5:BasicObject = LoadField v2, :x@0x1002
+          Jump bb3(v1, v3, v4, v5)
+        bb2():
+          EntryPoint JIT(0)
+          v8:BasicObject = LoadArg :self@0
+          v9:BasicObject = LoadArg :o@1
+          v10:BasicObject = LoadArg :name@2
+          v11:BasicObject = LoadArg :x@3
+          Jump bb3(v8, v9, v10, v11)
+        bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
+          v23:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+          PatchPoint NoEPEscape(dispatch_dynamic)
+          CheckInterrupts
+          Return v23
+        ");
+    }
+
+    #[test]
+    fn test_dispatch_chain_dynamic_send() {
+        let hir = with_dispatch_chain_options(0, || {
+            eval("
+                class DispatchDynamicTarget
+                  def inc(x) = x + 1
+                  def dec(x) = x - 1
+                end
+                def dispatch_dynamic(o, name, x) = o.send(name, x)
+                o = DispatchDynamicTarget.new
+                128.times { |i| dispatch_dynamic(o, i.even? ? :inc : :dec, 10) }
+            ");
+            let function = dispatch_chain_hir("dispatch_dynamic");
+            hir_string_with_selector_names(&function, &["inc", "dec"])
+        });
+        assert_snapshot!(hir, @"
+        fn dispatch_dynamic@<compiled>:6:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :o@0x1000
+          v4:BasicObject = LoadField v2, :name@0x1001
+          v5:BasicObject = LoadField v2, :x@0x1002
+          Jump bb3(v1, v3, v4, v5)
+        bb2():
+          EntryPoint JIT(0)
+          v8:BasicObject = LoadArg :self@0
+          v9:BasicObject = LoadArg :o@1
+          v10:BasicObject = LoadArg :name@2
+          v11:BasicObject = LoadArg :x@3
+          Jump bb3(v8, v9, v10, v11)
+        bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
+          v23:BasicObject = Send v14, :send, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+          PatchPoint NoEPEscape(dispatch_dynamic)
+          CheckInterrupts
+          Return v23
+        ");
+    }
+
+    #[test]
+    fn test_dispatch_chain_dynamic_public_send() {
+        let hir = with_dispatch_chain_options(0, || {
+            eval("
+                class DispatchDynamicTarget
+                  def inc(x) = x + 1
+                  def dec(x) = x - 1
+                end
+                def dispatch_dynamic(o, name, x) = o.public_send(name, x)
+                o = DispatchDynamicTarget.new
+                128.times { |i| dispatch_dynamic(o, i.even? ? :inc : :dec, 10) }
+            ");
+            let function = dispatch_chain_hir("dispatch_dynamic");
+            hir_string_with_selector_names(&function, &["inc", "dec"])
+        });
+        assert_snapshot!(hir, @"
+        fn dispatch_dynamic@<compiled>:6:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :o@0x1000
+          v4:BasicObject = LoadField v2, :name@0x1001
+          v5:BasicObject = LoadField v2, :x@0x1002
+          Jump bb3(v1, v3, v4, v5)
+        bb2():
+          EntryPoint JIT(0)
+          v8:BasicObject = LoadArg :self@0
+          v9:BasicObject = LoadArg :o@1
+          v10:BasicObject = LoadArg :name@2
+          v11:BasicObject = LoadArg :x@3
+          Jump bb3(v8, v9, v10, v11)
+        bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
+          PatchPoint NoSingletonClass(DispatchDynamicTarget@0x1008)
+          PatchPoint MethodRedefined(DispatchDynamicTarget@0x1008, public_send@0x1010, cme:0x1018)
+          v34:ObjectSubclass[class_exact:DispatchDynamicTarget] = GuardType v14, ObjectSubclass[class_exact:DispatchDynamicTarget] recompile
+          v35:BasicObject = CCallVariadic v34, :Kernel#public_send@0x1040, v15, v16
+          PatchPoint NoEPEscape(dispatch_dynamic)
+          CheckInterrupts
+          Return v35
+        ");
+    }
+
+    #[test]
+    fn test_dispatch_chain_correlated_receiver_name_pairs() {
+        with_dispatch_chain_options(0, || {
+            eval("
+                class DispatchCorrelatedA
+                  def a(x) = x + 1
+                  def b(x) = x - 1
+                end
+                class DispatchCorrelatedB
+                  def a(x) = x + 2
+                  def b(x) = x - 2
+                end
+                def dispatch_correlated(o, name, x) = o.__send__(name, x)
+                a = DispatchCorrelatedA.new
+                b = DispatchCorrelatedB.new
+                128.times do |i|
+                  i.even? ? dispatch_correlated(a, :a, 10) : dispatch_correlated(b, :b, 10)
+                end
+            ");
+            let function = dispatch_chain_hir("dispatch_correlated");
+            assert_snapshot!(hir_string_with_selector_names(&function, &["a", "b"]), @"
+            fn dispatch_correlated@<compiled>:10:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :name@0x1001
+              v5:BasicObject = LoadField v2, :x@0x1002
+              Jump bb3(v1, v3, v4, v5)
+            bb2():
+              EntryPoint JIT(0)
+              v8:BasicObject = LoadArg :self@0
+              v9:BasicObject = LoadArg :o@1
+              v10:BasicObject = LoadArg :name@2
+              v11:BasicObject = LoadArg :x@3
+              Jump bb3(v8, v9, v10, v11)
+            bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchCorrelatedA], bb6(), bb7()
+            bb6():
+              v26:ObjectSubclass[class_exact:DispatchCorrelatedA] = RefineType v14, ObjectSubclass[class_exact:DispatchCorrelatedA]
+              v27:BasicObject = Send v26, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+              Jump bb4(v27)
+            bb7():
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchCorrelatedB], bb8(), bb5()
+            bb8():
+              v31:ObjectSubclass[class_exact:DispatchCorrelatedB] = RefineType v14, ObjectSubclass[class_exact:DispatchCorrelatedB]
+              v32:BasicObject = Send v31, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+              Jump bb4(v32)
+            bb5():
+              v34:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: polymorphic fallback
+              Jump bb4(v34)
+            bb4(v23:BasicObject):
+              PatchPoint NoEPEscape(dispatch_correlated)
+              CheckInterrupts
+              Return v23
+            ");
+        });
+    }
+
+    #[test]
+    fn test_dispatch_chain_eight_keys_and_megamorphic_ninth_key() {
+        with_dispatch_chain_options(0, || {
+            eval("
+                class DispatchBudgetTarget
+                  def m0(x) = x + 0
+                  def m1(x) = x + 1
+                  def m2(x) = x + 2
+                  def m3(x) = x + 3
+                  def m4(x) = x + 4
+                  def m5(x) = x + 5
+                  def m6(x) = x + 6
+                  def m7(x) = x + 7
+                  def m8(x) = x + 8
+                end
+                class DispatchBudgetTargetA < DispatchBudgetTarget; end
+                class DispatchBudgetTargetB < DispatchBudgetTarget; end
+                class DispatchBudgetTargetC < DispatchBudgetTarget; end
+                def dispatch_eight_names(o, name, x) = o.__send__(name, x)
+                def dispatch_nine_names(o, name, x) = o.__send__(name, x)
+                def dispatch_eight_pairs(o, name, x) = o.__send__(name, x)
+                def dispatch_nine_pairs(o, name, x) = o.__send__(name, x)
+                receivers = [DispatchBudgetTarget.new,
+                             DispatchBudgetTargetA.new,
+                             DispatchBudgetTargetB.new,
+                             DispatchBudgetTargetC.new]
+                names = [:m0, :m1, :m2, :m3, :m4, :m5, :m6, :m7, :m8]
+                144.times do |i|
+                  dispatch_eight_names(receivers[0], names[i % 8], 10)
+                  dispatch_nine_names(receivers[0], names[i % 9], 10)
+                  key = i % 8
+                  dispatch_eight_pairs(receivers[key / 2], names[key % 2], 10)
+                  key = i % 9
+                  if key == 8
+                    dispatch_nine_pairs(receivers[0], :m2, 10)
+                  else
+                    dispatch_nine_pairs(receivers[key / 2], names[key % 2], 10)
+                  end
+                end
+            ");
+            let snapshots = ["dispatch_eight_names", "dispatch_nine_names", "dispatch_eight_pairs", "dispatch_nine_pairs"].map(|method| {
+                let function = dispatch_chain_hir(method);
+                hir_string_with_selector_names(&function, &["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8"])
+            });
+            assert_snapshot!(snapshots.join("\n"), @"
+            fn dispatch_eight_names@<compiled>:16:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :name@0x1001
+              v5:BasicObject = LoadField v2, :x@0x1002
+              Jump bb3(v1, v3, v4, v5)
+            bb2():
+              EntryPoint JIT(0)
+              v8:BasicObject = LoadArg :self@0
+              v9:BasicObject = LoadArg :o@1
+              v10:BasicObject = LoadArg :name@2
+              v11:BasicObject = LoadArg :x@3
+              Jump bb3(v8, v9, v10, v11)
+            bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
+              v23:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+              PatchPoint NoEPEscape(dispatch_eight_names)
+              CheckInterrupts
+              Return v23
+
+            fn dispatch_nine_names@<compiled>:17:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :name@0x1001
+              v5:BasicObject = LoadField v2, :x@0x1002
+              Jump bb3(v1, v3, v4, v5)
+            bb2():
+              EntryPoint JIT(0)
+              v8:BasicObject = LoadArg :self@0
+              v9:BasicObject = LoadArg :o@1
+              v10:BasicObject = LoadArg :name@2
+              v11:BasicObject = LoadArg :x@3
+              Jump bb3(v8, v9, v10, v11)
+            bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
+              v23:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+              PatchPoint NoEPEscape(dispatch_nine_names)
+              CheckInterrupts
+              Return v23
+
+            fn dispatch_eight_pairs@<compiled>:18:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :name@0x1001
+              v5:BasicObject = LoadField v2, :x@0x1002
+              Jump bb3(v1, v3, v4, v5)
+            bb2():
+              EntryPoint JIT(0)
+              v8:BasicObject = LoadArg :self@0
+              v9:BasicObject = LoadArg :o@1
+              v10:BasicObject = LoadArg :name@2
+              v11:BasicObject = LoadArg :x@3
+              Jump bb3(v8, v9, v10, v11)
+            bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTargetB], bb6(), bb7()
+            bb6():
+              v26:ObjectSubclass[class_exact:DispatchBudgetTargetB] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTargetB]
+              v27:BasicObject = Send v26, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+              Jump bb4(v27)
+            bb7():
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTargetA], bb8(), bb9()
+            bb8():
+              v31:ObjectSubclass[class_exact:DispatchBudgetTargetA] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTargetA]
+              v32:BasicObject = Send v31, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+              Jump bb4(v32)
+            bb9():
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTargetC], bb10(), bb11()
+            bb10():
+              v36:ObjectSubclass[class_exact:DispatchBudgetTargetC] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTargetC]
+              v37:BasicObject = Send v36, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+              Jump bb4(v37)
+            bb11():
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTarget], bb12(), bb5()
+            bb12():
+              v41:ObjectSubclass[class_exact:DispatchBudgetTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTarget]
+              v42:BasicObject = Send v41, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+              Jump bb4(v42)
+            bb5():
+              v44:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: polymorphic fallback
+              Jump bb4(v44)
+            bb4(v23:BasicObject):
+              PatchPoint NoEPEscape(dispatch_eight_pairs)
+              CheckInterrupts
+              Return v23
+
+            fn dispatch_nine_pairs@<compiled>:19:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :name@0x1001
+              v5:BasicObject = LoadField v2, :x@0x1002
+              Jump bb3(v1, v3, v4, v5)
+            bb2():
+              EntryPoint JIT(0)
+              v8:BasicObject = LoadArg :self@0
+              v9:BasicObject = LoadArg :o@1
+              v10:BasicObject = LoadArg :name@2
+              v11:BasicObject = LoadArg :x@3
+              Jump bb3(v8, v9, v10, v11)
+            bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTarget], bb6(), bb7()
+            bb6():
+              v26:ObjectSubclass[class_exact:DispatchBudgetTarget] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTarget]
+              v27:BasicObject = Send v26, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+              Jump bb4(v27)
+            bb7():
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTargetB], bb8(), bb9()
+            bb8():
+              v31:ObjectSubclass[class_exact:DispatchBudgetTargetB] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTargetB]
+              v32:BasicObject = Send v31, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+              Jump bb4(v32)
+            bb9():
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTargetC], bb10(), bb11()
+            bb10():
+              v36:ObjectSubclass[class_exact:DispatchBudgetTargetC] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTargetC]
+              v37:BasicObject = Send v36, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+              Jump bb4(v37)
+            bb11():
+              CondBranchHasType v14, ObjectSubclass[class_exact:DispatchBudgetTargetA], bb12(), bb5()
+            bb12():
+              v41:ObjectSubclass[class_exact:DispatchBudgetTargetA] = RefineType v14, ObjectSubclass[class_exact:DispatchBudgetTargetA]
+              v42:BasicObject = Send v41, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+              Jump bb4(v42)
+            bb5():
+              v44:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: polymorphic fallback
+              Jump bb4(v44)
+            bb4(v23:BasicObject):
+              PatchPoint NoEPEscape(dispatch_nine_pairs)
+              CheckInterrupts
+              Return v23
+            ");
+        });
+    }
+
+    #[test]
+    fn test_dispatch_chain_constant_selector_after_final_inline_iteration() {
+        with_dispatch_chain_options(100, || {
+            eval("
+                class DispatchConstantTarget
+                  def inc(x) = x + 1
+                  def dec(x) = x - 1
+                  def m0(x) = x + 0
+                  def m1(x) = x + 1
+                  def m2(x) = x + 2
+                  def m3(x) = x + 3
+                  def m4(x) = x + 4
+                  def m5(x) = x + 5
+                  def m6(x) = x + 6
+                  def m7(x) = x + 7
+                  def m8(x) = x + 8
+                end
+                DISPATCH_CONSTANT_TARGET = DispatchConstantTarget.new
+                def dispatch_constant_helper(o, name, x) = o.__send__(name, x)
+                names = [:m0, :m1, :m2, :m3, :m4, :m5, :m6, :m7, :m8]
+                144.times { |i| dispatch_constant_helper(DISPATCH_CONSTANT_TARGET, names[i % 9], 10) }
+                def dispatch_constant_inc(x) = dispatch_constant_helper(DISPATCH_CONSTANT_TARGET, :inc, x)
+                def dispatch_constant_dec(x) = dispatch_constant_helper(DISPATCH_CONSTANT_TARGET, :dec, x)
+                128.times do
+                  dispatch_constant_inc(10)
+                  dispatch_constant_dec(10)
+                end
+                DISPATCH_CONSTANT_FROZEN_INC = String.new('inc').freeze
+                DISPATCH_CONSTANT_FROZEN_DEC = String.new('dec').freeze
+                def dispatch_constant_frozen_inc(x) = dispatch_constant_helper(DISPATCH_CONSTANT_TARGET, DISPATCH_CONSTANT_FROZEN_INC, x)
+                def dispatch_constant_frozen_dec(x) = dispatch_constant_helper(DISPATCH_CONSTANT_TARGET, DISPATCH_CONSTANT_FROZEN_DEC, x)
+                128.times do
+                  dispatch_constant_frozen_inc(10)
+                  dispatch_constant_frozen_dec(10)
+                end
+            ");
+            let helper = dispatch_chain_hir("dispatch_constant_helper");
+            let mut snapshots = vec![hir_string_function(&helper)];
+            let old_max_iterations = get_option!(inline_max_iterations);
+            unsafe { OPTIONS.as_mut().unwrap().inline_max_iterations = 1; }
+            for caller in [
+                "dispatch_constant_inc", "dispatch_constant_dec",
+                "dispatch_constant_frozen_inc", "dispatch_constant_frozen_dec",
+            ] {
+                let function = dispatch_chain_hir(caller);
+                snapshots.push(hir_string_function(&function));
+            }
+            unsafe { OPTIONS.as_mut().unwrap().inline_max_iterations = old_max_iterations; }
+            assert_snapshot!(snapshots.join("\n"), @"
+            fn dispatch_constant_helper@<compiled>:16:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :name@0x1001
+              v5:BasicObject = LoadField v2, :x@0x1002
+              Jump bb3(v1, v3, v4, v5)
+            bb2():
+              EntryPoint JIT(0)
+              v8:BasicObject = LoadArg :self@0
+              v9:BasicObject = LoadArg :o@1
+              v10:BasicObject = LoadArg :name@2
+              v11:BasicObject = LoadArg :x@3
+              Jump bb3(v8, v9, v10, v11)
+            bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
+              v23:BasicObject = Send v14, :__send__, v15, v16 # SendFallbackReason: Send: unsupported optimized method type Send
+              PatchPoint NoEPEscape(dispatch_constant_helper)
+              CheckInterrupts
+              Return v23
+
+            fn dispatch_constant_inc@<compiled>:19:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :x@0x1000
+              Jump bb3(v1, v3)
+            bb2():
+              EntryPoint JIT(0)
+              v6:BasicObject = LoadArg :self@0
+              v7:BasicObject = LoadArg :x@1
+              Jump bb3(v6, v7)
+            bb3(v9:BasicObject, v10:BasicObject):
+              PatchPoint SingleRactorMode
+              PatchPoint StableConstantNames(0x1008, DISPATCH_CONSTANT_TARGET)
+              v17:ObjectSubclass[VALUE(0x1010)] = Const Value(VALUE(0x1010))
+              PatchPoint NoEPEscape(dispatch_constant_inc)
+              v21:StaticSymbol[:inc] = Const Value(VALUE(0x1018))
+              PatchPoint MethodRedefined(Object@0x1020, dispatch_constant_helper@0x1028, cme:0x1030)
+              v33:ObjectSubclass[class_exact*:Object@VALUE(0x1020)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1020)] recompile
+              PushInlineFrame :dispatch_constant_helper, v33 (0x1058), num_args=3
+              v46:BasicObject = Send v17, :__send__, v21, v10 # SendFallbackReason: Send: unsupported optimized method type Send
+              PatchPoint NoEPEscape(dispatch_constant_helper)
+              PopInlineFrame
+              PatchPoint NoEPEscape(dispatch_constant_inc)
+              CheckInterrupts
+              Return v46
+
+            fn dispatch_constant_dec@<compiled>:20:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :x@0x1000
+              Jump bb3(v1, v3)
+            bb2():
+              EntryPoint JIT(0)
+              v6:BasicObject = LoadArg :self@0
+              v7:BasicObject = LoadArg :x@1
+              Jump bb3(v6, v7)
+            bb3(v9:BasicObject, v10:BasicObject):
+              PatchPoint SingleRactorMode
+              PatchPoint StableConstantNames(0x1008, DISPATCH_CONSTANT_TARGET)
+              v17:ObjectSubclass[VALUE(0x1010)] = Const Value(VALUE(0x1010))
+              PatchPoint NoEPEscape(dispatch_constant_dec)
+              v21:StaticSymbol[:dec] = Const Value(VALUE(0x1018))
+              PatchPoint MethodRedefined(Object@0x1020, dispatch_constant_helper@0x1028, cme:0x1030)
+              v33:ObjectSubclass[class_exact*:Object@VALUE(0x1020)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1020)] recompile
+              PushInlineFrame :dispatch_constant_helper, v33 (0x1058), num_args=3
+              v46:BasicObject = Send v17, :__send__, v21, v10 # SendFallbackReason: Send: unsupported optimized method type Send
+              PatchPoint NoEPEscape(dispatch_constant_helper)
+              PopInlineFrame
+              PatchPoint NoEPEscape(dispatch_constant_dec)
+              CheckInterrupts
+              Return v46
+
+            fn dispatch_constant_frozen_inc@<compiled>:27:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :x@0x1000
+              Jump bb3(v1, v3)
+            bb2():
+              EntryPoint JIT(0)
+              v6:BasicObject = LoadArg :self@0
+              v7:BasicObject = LoadArg :x@1
+              Jump bb3(v6, v7)
+            bb3(v9:BasicObject, v10:BasicObject):
+              PatchPoint SingleRactorMode
+              PatchPoint StableConstantNames(0x1008, DISPATCH_CONSTANT_TARGET)
+              v17:ObjectSubclass[VALUE(0x1010)] = Const Value(VALUE(0x1010))
+              PatchPoint NoEPEscape(dispatch_constant_frozen_inc)
+              PatchPoint StableConstantNames(0x1018, DISPATCH_CONSTANT_FROZEN_INC)
+              v22:StringExact[VALUE(0x1020)] = Const Value(VALUE(0x1020))
+              PatchPoint MethodRedefined(Object@0x1028, dispatch_constant_helper@0x1030, cme:0x1038)
+              v36:ObjectSubclass[class_exact*:Object@VALUE(0x1028)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1028)] recompile
+              PushInlineFrame :dispatch_constant_helper, v36 (0x1060), num_args=3
+              v49:BasicObject = Send v17, :__send__, v22, v10 # SendFallbackReason: Send: unsupported optimized method type Send
+              PatchPoint NoEPEscape(dispatch_constant_helper)
+              PopInlineFrame
+              PatchPoint NoEPEscape(dispatch_constant_frozen_inc)
+              CheckInterrupts
+              Return v49
+
+            fn dispatch_constant_frozen_dec@<compiled>:28:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :x@0x1000
+              Jump bb3(v1, v3)
+            bb2():
+              EntryPoint JIT(0)
+              v6:BasicObject = LoadArg :self@0
+              v7:BasicObject = LoadArg :x@1
+              Jump bb3(v6, v7)
+            bb3(v9:BasicObject, v10:BasicObject):
+              PatchPoint SingleRactorMode
+              PatchPoint StableConstantNames(0x1008, DISPATCH_CONSTANT_TARGET)
+              v17:ObjectSubclass[VALUE(0x1010)] = Const Value(VALUE(0x1010))
+              PatchPoint NoEPEscape(dispatch_constant_frozen_dec)
+              PatchPoint StableConstantNames(0x1018, DISPATCH_CONSTANT_FROZEN_DEC)
+              v22:StringExact[VALUE(0x1020)] = Const Value(VALUE(0x1020))
+              PatchPoint MethodRedefined(Object@0x1028, dispatch_constant_helper@0x1030, cme:0x1038)
+              v36:ObjectSubclass[class_exact*:Object@VALUE(0x1028)] = GuardType v9, ObjectSubclass[class_exact*:Object@VALUE(0x1028)] recompile
+              PushInlineFrame :dispatch_constant_helper, v36 (0x1060), num_args=3
+              v49:BasicObject = Send v17, :__send__, v22, v10 # SendFallbackReason: Send: unsupported optimized method type Send
+              PatchPoint NoEPEscape(dispatch_constant_helper)
+              PopInlineFrame
+              PatchPoint NoEPEscape(dispatch_constant_frozen_dec)
+              CheckInterrupts
+              Return v49
+            ");
+        });
+    }
+
+    #[test]
+    fn test_dispatch_chain_selector_and_blockarg_exit_snapshots() {
+        with_dispatch_chain_options(0, || {
+            eval("
+                class DispatchSnapshotTarget
+                  def inc(x) = x + 1
+                  def dec(x) = x - 1
+                end
+                def dispatch_snapshot(o, name, x, block) = o.__send__(name, x, &block)
+                o = DispatchSnapshotTarget.new
+                128.times { |i| dispatch_snapshot(o, i.even? ? :inc : :dec, 10, nil) }
+            ");
+            let mut snapshots = Vec::new();
+            for threshold in [0, 100] {
+                set_inline_threshold(threshold);
+                let function = dispatch_chain_hir("dispatch_snapshot");
+                snapshots.push(format!("inline_threshold={threshold}:\n{}", hir_string_with_selector_names(&function, &["inc", "dec"])));
+            }
+            assert_snapshot!(snapshots.join("\n"), @"
+            inline_threshold=0:
+            fn dispatch_snapshot@<compiled>:6:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :name@0x1001
+              v5:BasicObject = LoadField v2, :x@0x1002
+              v6:BasicObject = LoadField v2, :block@0x1003
+              Jump bb3(v1, v3, v4, v5, v6)
+            bb2():
+              EntryPoint JIT(0)
+              v9:BasicObject = LoadArg :self@0
+              v10:BasicObject = LoadArg :o@1
+              v11:BasicObject = LoadArg :name@2
+              v12:BasicObject = LoadArg :x@3
+              v13:BasicObject = LoadArg :block@4
+              Jump bb3(v9, v10, v11, v12, v13)
+            bb3(v15:BasicObject, v16:BasicObject, v17:BasicObject, v18:BasicObject, v19:BasicObject):
+              v27:BasicObject = Send v16, &block, :__send__, v17, v18, v19 # SendFallbackReason: Send: unsupported method type Optimized
+              PatchPoint NoEPEscape(dispatch_snapshot)
+              CheckInterrupts
+              Return v27
+
+            inline_threshold=100:
+            fn dispatch_snapshot@<compiled>:6:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :name@0x1001
+              v5:BasicObject = LoadField v2, :x@0x1002
+              v6:BasicObject = LoadField v2, :block@0x1003
+              Jump bb3(v1, v3, v4, v5, v6)
+            bb2():
+              EntryPoint JIT(0)
+              v9:BasicObject = LoadArg :self@0
+              v10:BasicObject = LoadArg :o@1
+              v11:BasicObject = LoadArg :name@2
+              v12:BasicObject = LoadArg :x@3
+              v13:BasicObject = LoadArg :block@4
+              Jump bb3(v9, v10, v11, v12, v13)
+            bb3(v15:BasicObject, v16:BasicObject, v17:BasicObject, v18:BasicObject, v19:BasicObject):
+              v27:BasicObject = Send v16, &block, :__send__, v17, v18, v19 # SendFallbackReason: Send: unsupported method type Optimized
+              PatchPoint NoEPEscape(dispatch_snapshot)
+              CheckInterrupts
+              Return v27
+            ");
+        });
+    }
+
+    #[test]
+    fn test_dispatch_chain_missing_direct_dependencies_and_snapshots() {
+        with_dispatch_chain_options(0, || {
+            eval("
+                class DispatchMissingFixed
+                  def method_missing(name, x) = [name, x]
+                end
+                class DispatchMissingRest
+                  def method_missing(name, *args) = [name, args]
+                end
+                def dispatch_missing_fixed(o, x, block) = o.absent(x, &block)
+                def dispatch_missing_rest(o, x, block) = o.absent(x, &block)
+                fixed = DispatchMissingFixed.new
+                rest = DispatchMissingRest.new
+                128.times do
+                  dispatch_missing_fixed(fixed, 10, nil)
+                  dispatch_missing_rest(rest, 10, nil)
+                end
+            ");
+            let snapshots = ["dispatch_missing_fixed", "dispatch_missing_rest"].map(|method| {
+                hir_string_function(&dispatch_chain_hir(method))
+            });
+            assert_snapshot!(snapshots.join("\n"), @"
+            fn dispatch_missing_fixed@<compiled>:8:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :x@0x1001
+              v5:BasicObject = LoadField v2, :block@0x1002
+              Jump bb3(v1, v3, v4, v5)
+            bb2():
+              EntryPoint JIT(0)
+              v8:BasicObject = LoadArg :self@0
+              v9:BasicObject = LoadArg :o@1
+              v10:BasicObject = LoadArg :x@2
+              v11:BasicObject = LoadArg :block@3
+              Jump bb3(v8, v9, v10, v11)
+            bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
+              v23:BasicObject = Send v14, &block, :absent, v15, v16 # SendFallbackReason: Send: unsupported method type Null
+              PatchPoint NoEPEscape(dispatch_missing_fixed)
+              CheckInterrupts
+              Return v23
+
+            fn dispatch_missing_rest@<compiled>:9:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :x@0x1001
+              v5:BasicObject = LoadField v2, :block@0x1002
+              Jump bb3(v1, v3, v4, v5)
+            bb2():
+              EntryPoint JIT(0)
+              v8:BasicObject = LoadArg :self@0
+              v9:BasicObject = LoadArg :o@1
+              v10:BasicObject = LoadArg :x@2
+              v11:BasicObject = LoadArg :block@3
+              Jump bb3(v8, v9, v10, v11)
+            bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
+              v23:BasicObject = Send v14, &block, :absent, v15, v16 # SendFallbackReason: Send: unsupported method type Null
+              PatchPoint NoEPEscape(dispatch_missing_rest)
+              CheckInterrupts
+              Return v23
+            ");
+        });
+    }
+
+    #[test]
+    fn test_dispatch_chain_missing_string_canonical_symbol_and_snapshots() {
+        with_dispatch_chain_options(0, || {
+            eval("
+                class DispatchMissingString
+                  def method_missing(name, x) = [name, x]
+                end
+                def dispatch_missing_string_any(o, name, x, block) = o.__send__(name, x, &block)
+                def dispatch_missing_string_public(o, name, x, block) = o.public_send(name, x, &block)
+                class DispatchMissingStringNameOwner
+                  def dispatch_missing_string_name; end
+                end
+                o = DispatchMissingString.new
+                128.times do
+                  dispatch_missing_string_any(o, String.new('dispatch_missing_string_name'), 10, nil)
+                  dispatch_missing_string_public(o, String.new('dispatch_missing_string_name'), 10, nil)
+                end
+            ");
+            let snapshots = ["dispatch_missing_string_any", "dispatch_missing_string_public"].map(|method| {
+                hir_string_with_selector_names(&dispatch_chain_hir(method), &["dispatch_missing_string_name"])
+            });
+            assert_snapshot!(snapshots.join("\n"), @"
+            fn dispatch_missing_string_any@<compiled>:5:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :name@0x1001
+              v5:BasicObject = LoadField v2, :x@0x1002
+              v6:BasicObject = LoadField v2, :block@0x1003
+              Jump bb3(v1, v3, v4, v5, v6)
+            bb2():
+              EntryPoint JIT(0)
+              v9:BasicObject = LoadArg :self@0
+              v10:BasicObject = LoadArg :o@1
+              v11:BasicObject = LoadArg :name@2
+              v12:BasicObject = LoadArg :x@3
+              v13:BasicObject = LoadArg :block@4
+              Jump bb3(v9, v10, v11, v12, v13)
+            bb3(v15:BasicObject, v16:BasicObject, v17:BasicObject, v18:BasicObject, v19:BasicObject):
+              v27:BasicObject = Send v16, &block, :__send__, v17, v18, v19 # SendFallbackReason: Send: unsupported method type Optimized
+              PatchPoint NoEPEscape(dispatch_missing_string_any)
+              CheckInterrupts
+              Return v27
+
+            fn dispatch_missing_string_public@<compiled>:6:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :name@0x1001
+              v5:BasicObject = LoadField v2, :x@0x1002
+              v6:BasicObject = LoadField v2, :block@0x1003
+              Jump bb3(v1, v3, v4, v5, v6)
+            bb2():
+              EntryPoint JIT(0)
+              v9:BasicObject = LoadArg :self@0
+              v10:BasicObject = LoadArg :o@1
+              v11:BasicObject = LoadArg :name@2
+              v12:BasicObject = LoadArg :x@3
+              v13:BasicObject = LoadArg :block@4
+              Jump bb3(v9, v10, v11, v12, v13)
+            bb3(v15:BasicObject, v16:BasicObject, v17:BasicObject, v18:BasicObject, v19:BasicObject):
+              v27:BasicObject = Send v16, &block, :public_send, v17, v18, v19 # SendFallbackReason: Complex argument passing
+              PatchPoint NoEPEscape(dispatch_missing_string_public)
+              CheckInterrupts
+              Return v27
+            ");
+        });
+    }
+
+    #[test]
+    fn test_dispatch_chain_missing_splat_guards_precede_reason() {
+        with_dispatch_chain_options(0, || {
+            eval("
+                class DispatchMissingSplat
+                  def method_missing(name, x) = [name, x]
+                end
+                def dispatch_missing_splat(o, name, args) = o.__send__(name, *args)
+                o = DispatchMissingSplat.new
+                128.times { dispatch_missing_splat(o, :absent, [10]) }
+            ");
+            let function = dispatch_chain_hir("dispatch_missing_splat");
+            assert_snapshot!(hir_string_with_selector_names(&function, &["absent"]), @"
+            fn dispatch_missing_splat@<compiled>:5:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :name@0x1001
+              v5:BasicObject = LoadField v2, :args@0x1002
+              Jump bb3(v1, v3, v4, v5)
+            bb2():
+              EntryPoint JIT(0)
+              v8:BasicObject = LoadArg :self@0
+              v9:BasicObject = LoadArg :o@1
+              v10:BasicObject = LoadArg :name@2
+              v11:BasicObject = LoadArg :args@3
+              Jump bb3(v8, v9, v10, v11)
+            bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
+              v23:ArrayExact = ToArray v16
+              PatchPoint NoEPEscape(dispatch_missing_splat)
+              v27:BasicObject = Send v14, :__send__, v15, v23 # SendFallbackReason: Send: unsupported optimized method type Send
+              PatchPoint NoEPEscape(dispatch_missing_splat)
+              CheckInterrupts
+              Return v27
+            ");
+        });
+    }
+
+
+    #[test]
+    fn test_dispatch_chain_missing_fixed_proxy_inlines_handler_and_target() {
+        let hir = with_dispatch_chain_options(100, || {
+            eval("
+                class DispatchMissingInlineTarget
+                  def inc(x) = x + 1
+                end
+                class DispatchMissingInlineProxy
+                  def initialize(target); @target = target; end
+                  def method_missing(name, x); @target.__send__(name, x); end
+                end
+                DISPATCH_MISSING_INLINE_PROXY = DispatchMissingInlineProxy.new(DispatchMissingInlineTarget.new)
+                def dispatch_missing_inline(o, x) = o.inc(x)
+                128.times { dispatch_missing_inline(DISPATCH_MISSING_INLINE_PROXY, 10) }
+            ");
+            let old_max_iterations = get_option!(inline_max_iterations);
+            unsafe { OPTIONS.as_mut().unwrap().inline_max_iterations = 1; }
+            let direct_hir = hir_string_function(&dispatch_chain_hir("dispatch_missing_inline"));
+            unsafe { OPTIONS.as_mut().unwrap().inline_max_iterations = old_max_iterations; }
+            let function = dispatch_chain_hir("dispatch_missing_inline");
+            format!("After one inlining round:\n{direct_hir}\nAfter full optimization:\n{}", hir_string_function(&function))
+        });
+        assert_snapshot!(hir, @"
+        After one inlining round:
+        fn dispatch_missing_inline@<compiled>:10:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :o@0x1000
+          v4:BasicObject = LoadField v2, :x@0x1001
+          Jump bb3(v1, v3, v4)
+        bb2():
+          EntryPoint JIT(0)
+          v7:BasicObject = LoadArg :self@0
+          v8:BasicObject = LoadArg :o@1
+          v9:BasicObject = LoadArg :x@2
+          Jump bb3(v7, v8, v9)
+        bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
+          v19:BasicObject = Send v12, :inc, v13 # SendFallbackReason: Send: unsupported method type Null
+          PatchPoint NoEPEscape(dispatch_missing_inline)
+          CheckInterrupts
+          Return v19
+
+        After full optimization:
+        fn dispatch_missing_inline@<compiled>:10:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :o@0x1000
+          v4:BasicObject = LoadField v2, :x@0x1001
+          Jump bb3(v1, v3, v4)
+        bb2():
+          EntryPoint JIT(0)
+          v7:BasicObject = LoadArg :self@0
+          v8:BasicObject = LoadArg :o@1
+          v9:BasicObject = LoadArg :x@2
+          Jump bb3(v7, v8, v9)
+        bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
+          v19:BasicObject = Send v12, :inc, v13 # SendFallbackReason: Send: unsupported method type Null
+          PatchPoint NoEPEscape(dispatch_missing_inline)
+          CheckInterrupts
+          Return v19
+        ");
+    }
+
+    #[test]
+    fn test_dispatch_chain_missing_rest_proxy_inlines_handler_and_target() {
+        let hir = with_dispatch_chain_options(100, || {
+            eval("
+                class DispatchMissingInlineTarget
+                  def inc(x) = x + 1
+                end
+                class DispatchMissingInlineProxy
+                  def initialize(target); @target = target; end
+                  def method_missing(name, *args); @target.__send__(name, *args); end
+                end
+                DISPATCH_MISSING_INLINE_PROXY = DispatchMissingInlineProxy.new(DispatchMissingInlineTarget.new)
+                def dispatch_missing_inline(o, x) = o.inc(x)
+                128.times { dispatch_missing_inline(DISPATCH_MISSING_INLINE_PROXY, 10) }
+            ");
+            let old_max_iterations = get_option!(inline_max_iterations);
+            unsafe { OPTIONS.as_mut().unwrap().inline_max_iterations = 1; }
+            let direct_hir = hir_string_function(&dispatch_chain_hir("dispatch_missing_inline"));
+            unsafe { OPTIONS.as_mut().unwrap().inline_max_iterations = old_max_iterations; }
+            let function = dispatch_chain_hir("dispatch_missing_inline");
+            format!("After one inlining round:\n{direct_hir}\nAfter full optimization:\n{}", hir_string_function(&function))
+        });
+        assert_snapshot!(hir, @"
+        After one inlining round:
+        fn dispatch_missing_inline@<compiled>:10:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :o@0x1000
+          v4:BasicObject = LoadField v2, :x@0x1001
+          Jump bb3(v1, v3, v4)
+        bb2():
+          EntryPoint JIT(0)
+          v7:BasicObject = LoadArg :self@0
+          v8:BasicObject = LoadArg :o@1
+          v9:BasicObject = LoadArg :x@2
+          Jump bb3(v7, v8, v9)
+        bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
+          v19:BasicObject = Send v12, :inc, v13 # SendFallbackReason: Send: unsupported method type Null
+          PatchPoint NoEPEscape(dispatch_missing_inline)
+          CheckInterrupts
+          Return v19
+
+        After full optimization:
+        fn dispatch_missing_inline@<compiled>:10:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :o@0x1000
+          v4:BasicObject = LoadField v2, :x@0x1001
+          Jump bb3(v1, v3, v4)
+        bb2():
+          EntryPoint JIT(0)
+          v7:BasicObject = LoadArg :self@0
+          v8:BasicObject = LoadArg :o@1
+          v9:BasicObject = LoadArg :x@2
+          Jump bb3(v7, v8, v9)
+        bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
+          v19:BasicObject = Send v12, :inc, v13 # SendFallbackReason: Send: unsupported method type Null
+          PatchPoint NoEPEscape(dispatch_missing_inline)
+          CheckInterrupts
+          Return v19
+        ");
+    }
+
+    #[test]
+    fn test_dispatch_chain_missing_vcall_without_arguments() {
+        with_dispatch_chain_options(0, || {
+            eval("
+                class DispatchMissingVcall
+                  def method_missing(name) = [name]
+                  def entry = absent_vcall
+                end
+                o = DispatchMissingVcall.new
+                128.times { o.entry }
+            ");
+            let entry = get_method_iseq("DispatchMissingVcall.new", "entry");
+            unsafe { crate::cruby::rb_zjit_profile_disable(entry) };
+            let mut function = iseq_to_hir(entry).unwrap();
+            function.optimize();
+            function.validate().unwrap();
+            assert_snapshot!(hir_string_function(&function), @"
+            fn entry@<compiled>:4:
+            bb1():
+              EntryPoint interpreter
+              v1:HeapBasicObject = LoadSelf
+              Jump bb3(v1)
+            bb2():
+              EntryPoint JIT(0)
+              v4:HeapBasicObject = LoadArg :self@0
+              Jump bb3(v4)
+            bb3(v6:HeapBasicObject):
+              v11:BasicObject = Send v6, :absent_vcall # SendFallbackReason: Send: unsupported method type Null
+              CheckInterrupts
+              Return v11
+            ");
+        });
+    }
+
+    #[test]
+    fn test_dispatch_chain_literal_method_missing_call_is_not_adapted() {
+        with_dispatch_chain_options(0, || {
+            eval("
+                class DispatchLiteralMissing
+                  def method_missing(name, x) = [name, x]
+                  public :method_missing
+                end
+                def dispatch_literal_missing(o, x) = o.method_missing(:inc, x)
+                o = DispatchLiteralMissing.new
+                128.times { dispatch_literal_missing(o, 10) }
+            ");
+            let function = dispatch_chain_hir("dispatch_literal_missing");
+            assert_snapshot!(hir_string_function(&function), @"
+            fn dispatch_literal_missing@<compiled>:6:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :x@0x1001
+              Jump bb3(v1, v3, v4)
+            bb2():
+              EntryPoint JIT(0)
+              v7:BasicObject = LoadArg :self@0
+              v8:BasicObject = LoadArg :o@1
+              v9:BasicObject = LoadArg :x@2
+              Jump bb3(v7, v8, v9)
+            bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
+              v18:StaticSymbol[:inc] = Const Value(VALUE(0x1008))
+              PatchPoint NoSingletonClass(DispatchLiteralMissing@0x1010)
+              PatchPoint MethodRedefined(DispatchLiteralMissing@0x1010, method_missing@0x1018, cme:0x1020)
+              v31:ObjectSubclass[class_exact:DispatchLiteralMissing] = GuardType v12, ObjectSubclass[class_exact:DispatchLiteralMissing] recompile
+              v32:BasicObject = SendDirect v31, 0x0, :method_missing (0x1048), v18, v13
+              PatchPoint NoEPEscape(dispatch_literal_missing)
+              CheckInterrupts
+              Return v32
+            ");
+        });
+    }
+
+    #[test]
+    fn test_dispatch_chain_missing_proc_block_guard_and_exit_snapshot() {
+        with_dispatch_chain_options(0, || {
+            eval("
+                class DispatchMissingProc
+                  def method_missing(name, x); yield x; end
+                end
+                def dispatch_missing_proc(o, x, block) = o.absent(x, &block)
+                o = DispatchMissingProc.new
+                block = proc { |x| x + 1 }
+                128.times { dispatch_missing_proc(o, 10, block) }
+            ");
+            let function = dispatch_chain_hir("dispatch_missing_proc");
+            assert_snapshot!(hir_string_function(&function), @"
+            fn dispatch_missing_proc@<compiled>:5:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :x@0x1001
+              v5:BasicObject = LoadField v2, :block@0x1002
+              Jump bb3(v1, v3, v4, v5)
+            bb2():
+              EntryPoint JIT(0)
+              v8:BasicObject = LoadArg :self@0
+              v9:BasicObject = LoadArg :o@1
+              v10:BasicObject = LoadArg :x@2
+              v11:BasicObject = LoadArg :block@3
+              Jump bb3(v8, v9, v10, v11)
+            bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject, v16:BasicObject):
+              v23:BasicObject = Send v14, &block, :absent, v15, v16 # SendFallbackReason: Send: unsupported method type Null
+              PatchPoint NoEPEscape(dispatch_missing_proc)
+              CheckInterrupts
+              Return v23
+            ");
+        });
+    }
+
+    #[test]
+    fn test_dispatch_chain_missing_visibility_reasons_and_protected_fallback() {
+        with_dispatch_chain_options(0, || {
+            eval("
+                class DispatchMissingVisibility
+                  def hidden(x) = x + 100
+                  def guarded(x) = x + 200
+                  private :hidden
+                  protected :guarded
+                  def method_missing(name, x) = [name, x]
+                end
+                def dispatch_missing_private(o, x) = o.hidden(x)
+                def dispatch_missing_public_private(o, x) = o.public_send(:hidden, x)
+                def dispatch_missing_public_protected(o, x) = o.public_send(:guarded, x)
+                def dispatch_missing_protected(o, x) = o.guarded(x)
+                o = DispatchMissingVisibility.new
+                128.times do
+                  dispatch_missing_private(o, 10)
+                  dispatch_missing_public_private(o, 10)
+                  dispatch_missing_public_protected(o, 10)
+                  dispatch_missing_protected(o, 10)
+                end
+            ");
+            let snapshots = ["dispatch_missing_private", "dispatch_missing_public_private", "dispatch_missing_public_protected", "dispatch_missing_protected"].map(|method| {
+                hir_string_function(&dispatch_chain_hir(method))
+            });
+            assert_snapshot!(snapshots.join("\n"), @"
+            fn dispatch_missing_private@<compiled>:9:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :x@0x1001
+              Jump bb3(v1, v3, v4)
+            bb2():
+              EntryPoint JIT(0)
+              v7:BasicObject = LoadArg :self@0
+              v8:BasicObject = LoadArg :o@1
+              v9:BasicObject = LoadArg :x@2
+              Jump bb3(v7, v8, v9)
+            bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
+              v19:BasicObject = Send v12, :hidden, v13 # SendFallbackReason: Send: method private or protected and no FCALL
+              PatchPoint NoEPEscape(dispatch_missing_private)
+              CheckInterrupts
+              Return v19
+
+            fn dispatch_missing_public_private@<compiled>:10:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :x@0x1001
+              Jump bb3(v1, v3, v4)
+            bb2():
+              EntryPoint JIT(0)
+              v7:BasicObject = LoadArg :self@0
+              v8:BasicObject = LoadArg :o@1
+              v9:BasicObject = LoadArg :x@2
+              Jump bb3(v7, v8, v9)
+            bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
+              v18:StaticSymbol[:hidden] = Const Value(VALUE(0x1008))
+              PatchPoint NoSingletonClass(DispatchMissingVisibility@0x1010)
+              PatchPoint MethodRedefined(DispatchMissingVisibility@0x1010, public_send@0x1018, cme:0x1020)
+              v32:ObjectSubclass[class_exact:DispatchMissingVisibility] = GuardType v12, ObjectSubclass[class_exact:DispatchMissingVisibility] recompile
+              v33:BasicObject = CCallVariadic v32, :Kernel#public_send@0x1048, v18, v13
+              PatchPoint NoEPEscape(dispatch_missing_public_private)
+              CheckInterrupts
+              Return v33
+
+            fn dispatch_missing_public_protected@<compiled>:11:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :x@0x1001
+              Jump bb3(v1, v3, v4)
+            bb2():
+              EntryPoint JIT(0)
+              v7:BasicObject = LoadArg :self@0
+              v8:BasicObject = LoadArg :o@1
+              v9:BasicObject = LoadArg :x@2
+              Jump bb3(v7, v8, v9)
+            bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
+              v18:StaticSymbol[:guarded] = Const Value(VALUE(0x1008))
+              PatchPoint NoSingletonClass(DispatchMissingVisibility@0x1010)
+              PatchPoint MethodRedefined(DispatchMissingVisibility@0x1010, public_send@0x1018, cme:0x1020)
+              v32:ObjectSubclass[class_exact:DispatchMissingVisibility] = GuardType v12, ObjectSubclass[class_exact:DispatchMissingVisibility] recompile
+              v33:BasicObject = CCallVariadic v32, :Kernel#public_send@0x1048, v18, v13
+              PatchPoint NoEPEscape(dispatch_missing_public_protected)
+              CheckInterrupts
+              Return v33
+
+            fn dispatch_missing_protected@<compiled>:12:
+            bb1():
+              EntryPoint interpreter
+              v1:BasicObject = LoadSelf
+              v2:CPtr = LoadSP
+              v3:BasicObject = LoadField v2, :o@0x1000
+              v4:BasicObject = LoadField v2, :x@0x1001
+              Jump bb3(v1, v3, v4)
+            bb2():
+              EntryPoint JIT(0)
+              v7:BasicObject = LoadArg :self@0
+              v8:BasicObject = LoadArg :o@1
+              v9:BasicObject = LoadArg :x@2
+              Jump bb3(v7, v8, v9)
+            bb3(v11:BasicObject, v12:BasicObject, v13:BasicObject):
+              v19:BasicObject = Send v12, :guarded, v13 # SendFallbackReason: Send: method private or protected and no FCALL
+              PatchPoint NoEPEscape(dispatch_missing_protected)
+              CheckInterrupts
+              Return v19
+            ");
+        });
     }
 
     #[test]

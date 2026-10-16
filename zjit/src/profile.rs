@@ -532,6 +532,106 @@ impl IseqProfile {
 mod tests {
     use crate::cruby::*;
 
+    use super::{Distribution, DistributionSummary, DISTRIBUTION_SIZE};
+    use crate::options::get_option;
+    use crate::payload::get_or_create_iseq_payload;
+
+    #[test]
+    fn test_dispatch_chain_missing_outer_method_has_no_profile() {
+        with_rubyvm(|| {
+            assert_eq!(inspect("
+                class DispatchMissingOuter
+                  def method_missing(name, selector) = [name, selector]
+                end
+                def dispatch_missing_outer(o) = o.absent(:inc)
+                30.times { dispatch_missing_outer(DispatchMissingOuter.new) }
+                dispatch_missing_outer(DispatchMissingOuter.new)
+            "), "[:absent, :inc]");
+        });
+    }
+
+    #[test]
+    fn test_dispatch_chain_profile_capacity() {
+        let mut distribution = Distribution::<(usize, usize), DISTRIBUTION_SIZE>::new();
+        for index in 0..DISTRIBUTION_SIZE {
+            distribution.observe((index, index));
+        }
+        assert_eq!(distribution.each_item().count(), DISTRIBUTION_SIZE);
+        assert!(distribution.each_item().all(|(receiver, name)| receiver == name));
+        assert!(DistributionSummary::new(&distribution).is_polymorphic());
+
+        // A new pair exceeds capacity even when both components were already observed.
+        distribution.observe((0, 1));
+        assert_eq!(distribution.each_item().count(), DISTRIBUTION_SIZE);
+        assert!(DistributionSummary::new(&distribution).is_megamorphic());
+    }
+
+    #[test]
+    fn test_dispatch_chain_profile_correlation_and_compaction() {
+        with_rubyvm(|| {
+            let old_profiles = get_option!(num_profiles);
+            let old_threshold = unsafe { crate::options::rb_zjit_call_threshold };
+            crate::options::set_num_profiles(16);
+            crate::options::set_call_threshold(20);
+            assert_eq!(inspect("
+                class DispatchProfileA
+                  def a = 1
+                end
+                class DispatchProfileB
+                  def b = 2
+                end
+                def dispatch_profile(o, name) = o.__send__(name)
+                a = DispatchProfileA.new
+                b = DispatchProfileB.new
+                100.times { dispatch_profile(a, :a); dispatch_profile(b, :b) }
+                GC.verify_compaction_references(expand_heap: true, toward: :empty)
+                [dispatch_profile(a, :a), dispatch_profile(b, :b)]
+            "), "[1, 2]");
+            let a = eval("DispatchProfileA");
+            let b = eval("DispatchProfileB");
+            let iseq = get_method_iseq("self", "dispatch_profile");
+            let profile = &get_or_create_iseq_payload(iseq).profile;
+            let mut entries = profile.entries.iter().filter(|entry| !entry.opnd_types.is_empty());
+            let operands = &entries.next().expect("call operands were profiled").opnd_types;
+            assert!(entries.next().is_none());
+            assert_eq!(operands.len(), 2);
+            assert_eq!(operands[0].each_item().count(), 2);
+            for class in [a, b] {
+                assert!(operands[0].each_item().any(|receiver| receiver.class() == class));
+            }
+            assert_eq!(operands[1].each_item().count(), 1);
+            assert!(operands[1].each_item().all(|name| name.is_static_symbol()));
+            crate::options::set_call_threshold(old_threshold);
+            crate::options::set_num_profiles(old_profiles);
+        });
+    }
+
+    #[test]
+    fn test_dispatch_chain_profile_never_coerces_names() {
+        with_rubyvm(|| {
+            let old_profiles = get_option!(num_profiles);
+            let old_threshold = unsafe { crate::options::rb_zjit_call_threshold };
+            crate::options::set_num_profiles(16);
+            crate::options::set_call_threshold(20);
+            assert_eq!(inspect("
+                $coercions = 0
+                class DispatchProfileName
+                  def to_str; $coercions += 1; 'inc'; end
+                end
+                class DispatchProfileTarget
+                  def inc = 11
+                end
+                def dispatch_coercion(o, name) = o.__send__(name)
+                target = DispatchProfileTarget.new
+                name = DispatchProfileName.new
+                30.times { raise unless dispatch_coercion(target, name) == 11 }
+                $coercions
+            "), "30");
+            crate::options::set_call_threshold(old_threshold);
+            crate::options::set_num_profiles(old_profiles);
+        });
+    }
+
     #[test]
     fn can_profile_block_handler() {
         with_rubyvm(|| eval("

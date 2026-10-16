@@ -38,6 +38,40 @@ fn with_inlining_threshold<T>(threshold: usize, mut ruby_fragment: impl FnMut() 
     })
 }
 
+#[track_caller]
+fn with_dispatch_profiles<T>(mut body: impl FnMut() -> T) -> T {
+    with_inlining(|| {
+        let old_profiles = get_option!(num_profiles);
+        set_call_threshold(20);
+        crate::options::set_num_profiles(16);
+        let result = body();
+        crate::options::set_num_profiles(old_profiles);
+        result
+    })
+}
+
+#[track_caller]
+fn check_missing_dispatch_mutation(setup: &str, change: &str, expected: &str) {
+    with_dispatch_profiles(|| {
+        set_inline_threshold(0);
+        eval(&format!("
+            class DispatchMutationBase
+              def method_missing(name, x) = 77
+            end
+            class DispatchMutation < DispatchMutationBase
+              def method_missing(name, x) = x + 1
+            end
+            def mutation_entry(o) = o.inc(10)
+            $proxy = DispatchMutation.new
+            {setup}
+            100.times {{ mutation_entry($proxy) }}
+        "));
+        let iseq = get_method_iseq("self", "mutation_entry");
+        assert_eq!(get_or_create_iseq_payload(iseq).versions.len(), 1);
+        assert_eq!(assert_compiles_allowing_exits(change), expected);
+    });
+}
+
 /// Like `assert_compiles`, but also asserts that the program inlined at least one method
 /// while running. Inliner tests must call the entry method enough times to cross the call
 /// threshold, otherwise the method is never compiled and the test code ends up running in
@@ -65,6 +99,858 @@ fn assert_inlines_allowing_exits(program: &str) -> String {
     assert!(counters.inline_method_count > inline_count_before,
         "expected the program to inline at least one method, but inline_method_count did not increase");
     result
+}
+
+#[test]
+fn test_dispatch_chain_normalized_ordinary_arguments() {
+    with_inlining(|| {
+        eval("
+            def callee(x, *rest, k:) = [x, rest, k]
+            def entry(x, blk) = callee(x, 2, k: 3, &blk)
+            30.times { entry(1, nil) }
+        ");
+        assert_eq!(assert_compiles("entry(1, nil)"), "[1, [2], 3]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_original_block_guard_bailout() {
+    with_inlining(|| {
+        eval("
+            $calls = 0
+            def callee(x) = block_given? ? yield(x) : x
+            def entry(blk) = callee(($calls += 1; 10), &blk)
+            30.times { entry(nil) }
+            $calls = 0
+        ");
+        assert_eq!(assert_compiles_allowing_exits("[entry(proc { |x| x + 1 }), $calls]"), "[11, 1]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_inlined_callee_exit_does_not_replay_caller() {
+    with_inlining(|| {
+        eval("
+            $calls = 0
+            def callee(x) = x + 1
+            def entry(x) = callee(($calls += 1; x))
+            class DispatchExitOperand
+              def +(n) = 42
+            end
+            30.times { entry(10) }
+            $calls = 0
+        ");
+        assert_eq!(assert_compiles_allowing_exits("[entry(DispatchExitOperand.new), $calls]"), "[42, 1]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_normalized_stack_overflow_recovers() {
+    with_inlining(|| {
+        eval("
+            def callee(n, *rest, k:)
+              n == 0 ? rest[0] + k : entry(n - 1, nil)
+            end
+            def entry(n, blk) = callee(n, 2, k: 3, &blk)
+            30.times { entry(2, nil) }
+        ");
+        assert_eq!(assert_compiles_allowing_exits("
+            Fiber.new do
+              overflow = false
+              begin
+                entry(100_000, nil)
+              rescue SystemStackError
+                overflow = true
+              end
+              [overflow, entry(2, nil)]
+            end.resume
+        "), "[true, 5]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_name_id_preserves_mutation_and_does_not_intern() {
+    // Exercise the existing VM helper without adding a production Rust binding.
+    unsafe extern "C" {
+        fn rb_get_symbol_id(name: VALUE) -> ID;
+    }
+
+    let inc = unsafe { rb_get_symbol_id(eval(":inc")) };
+    let dec = unsafe { rb_get_symbol_id(eval(":dec")) };
+    let first = eval("$dispatch_name = String.new('inc')");
+    assert_eq!(unsafe { rb_get_symbol_id(first) }, inc);
+    assert_eq!(unsafe { rb_get_symbol_id(eval("String.new('inc')")) }, inc);
+    let changed = eval("$dispatch_name.replace('dec')");
+    assert_eq!(unsafe { rb_get_symbol_id(changed) }, dec);
+    let unknown = eval("'dispatch_never_intern_this_72a651c'.dup");
+    assert_eq!(unsafe { rb_get_symbol_id(unknown) }, ID(0));
+    assert_eq!(unsafe { rb_get_symbol_id(unknown) }, ID(0));
+
+    let frozen = eval("String.new('inc').freeze");
+    assert!(frozen.is_frozen());
+    assert_eq!(unsafe { rb_get_symbol_id(frozen) }, inc);
+    let unassigned = eval("$dispatch_frozen_late = ('dispatch_frozen_selector_' + 'late_06d49a').freeze");
+    assert_eq!(unsafe { rb_get_symbol_id(unassigned) }, ID(0));
+    let dynamic = eval("$dispatch_frozen_dynamic = $dispatch_frozen_late.to_sym");
+    assert_eq!(unsafe { rb_get_symbol_id(dynamic) }, ID(0));
+    assert_eq!(unsafe { rb_get_symbol_id(eval("$dispatch_frozen_late")) }, ID(0));
+    let assigned = eval("Class.new { define_method($dispatch_frozen_late) { 42 } }; $dispatch_frozen_late");
+    let assigned_id = unsafe { rb_get_symbol_id(assigned) };
+    assert_ne!(assigned_id, ID(0));
+    assert_eq!(unsafe { rb_get_symbol_id(eval("$dispatch_frozen_dynamic")) }, assigned_id);
+    let after_gc = eval("
+        GC.verify_compaction_references(expand_heap: true, toward: :empty)
+        $dispatch_frozen_late
+    ");
+    assert_eq!(unsafe { rb_get_symbol_id(after_gc) }, assigned_id);
+    let coercible = eval("
+        $dispatch_conversions = 0
+        Object.new.tap do |name|
+          def name.to_str; $dispatch_conversions += 1; 'inc'; end
+        end
+    ");
+    assert_eq!(unsafe { rb_get_symbol_id(coercible) }, ID(0));
+    assert_eq!(inspect("$dispatch_conversions"), "0");
+}
+
+#[test]
+fn test_dispatch_chain_dynamic_selectors_and_late_tail() {
+    with_dispatch_profiles(|| {
+        // Compile the wrappers themselves before measuring version stability.
+        set_inline_threshold(0);
+        eval("
+            class DispatchTarget
+              def inc(x) = x + 1
+              def dec(x) = x - 1
+              def third(x) = x + 2
+            end
+            def via_send(o, n) = o.send(n, 10)
+            def via_dunder(o, n) = o.__send__(n, 10)
+            def via_public(o, n) = o.public_send(n, 10)
+            $target = DispatchTarget.new
+            100.times do |i|
+              n = i.even? ? :inc : :dec
+              via_send($target, n); via_dunder($target, n); via_public($target, n)
+              $target.third(10)
+            end
+        ");
+        let versions: Vec<_> = ["via_send", "via_dunder", "via_public"].into_iter()
+            .map(|name| get_or_create_iseq_payload(get_method_iseq("self", name)).versions.len()).collect();
+        assert!(versions.iter().all(|&versions| versions == 1));
+        assert_eq!(assert_compiles("
+            100.times do
+              raise unless via_send($target, :third) == 12
+              raise unless via_dunder($target, :third) == 12
+              raise unless via_public($target, :third) == 12
+            end
+            [via_send($target, :inc), via_dunder($target, :dec), via_public($target, :inc)]
+        "), "[11, 9, 11]");
+        for (name, before) in ["via_send", "via_dunder", "via_public"].into_iter().zip(versions) {
+            assert_eq!(get_or_create_iseq_payload(get_method_iseq("self", name)).versions.len(), before);
+        }
+    });
+}
+
+#[test]
+fn test_dispatch_chain_mutable_string_and_coercion() {
+    with_dispatch_profiles(|| {
+        eval("
+            class DispatchNameTarget
+              def inc(x) = x + 1
+              def dec(x) = x - 1
+            end
+            class DispatchCoercibleName
+              def to_str; $conversions += 1; 'inc'; end
+            end
+            def dispatch_name(o, n) = o.__send__(n, 10)
+            $target = DispatchNameTarget.new
+            $name = String.new('inc')
+            $conversions = 0
+            100.times { dispatch_name($target, $name) }
+        ");
+        assert_eq!(assert_compiles_allowing_exits("
+            first = dispatch_name($target, String.new('inc'))
+            $name.replace('dec')
+            second = dispatch_name($target, $name)
+            30.times { raise unless dispatch_name($target, DispatchCoercibleName.new) == 11 }
+            [first, second, $conversions]
+        "), "[11, 9, 30]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_intrinsic_aliases_and_overrides() {
+    with_dispatch_profiles(|| {
+        eval("
+            class DispatchAliases
+              alias invoke __send__
+              alias public_invoke public_send
+              def inc(x) = x + 1
+            end
+            def alias_send(o, n) = o.invoke(n, 10)
+            def alias_public(o, n) = o.public_invoke(n, 10)
+            def original_send(o, n) = o.send(n, 10)
+            def original_dunder(o, n) = o.__send__(n, 10)
+            def original_public(o, n) = o.public_send(n, 10)
+            $target = DispatchAliases.new
+            100.times do
+              alias_send($target, :inc); alias_public($target, :inc)
+              original_send($target, :inc); original_dunder($target, :inc); original_public($target, :inc)
+            end
+        ");
+        assert_eq!(assert_compiles("[alias_send($target, :inc), alias_public($target, :inc)]"), "[11, 11]");
+        assert_eq!(assert_compiles_allowing_exits("
+            class DispatchAliases
+              def send(*) = 81
+              def __send__(*) = 82
+              def public_send(*) = 83
+            end
+            [original_send($target, :inc), original_dunder($target, :inc), original_public($target, :inc),
+             alias_send($target, :inc), alias_public($target, :inc)]
+        "), "[81, 82, 83, 11, 11]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_argument_and_block_forms() {
+    with_dispatch_profiles(|| {
+        eval("
+            class DispatchArguments
+              def combine(a, b = 2, *rest, last, k: 3)
+                [a, b, rest, last, k, block_given? ? yield(a) : nil]
+              end
+              def optional(a, b = 2) = [a, b]
+            end
+            def literal(o, n) = o.__send__(n, 1, 2, 3, 4, k: 5) { |x| x + 10 }
+            def nil_block(o, n, blk) = o.__send__(n, 1, 2, 3, 4, k: 5, &blk)
+            def proc_block(o, n, blk) = o.__send__(n, 1, 2, 3, 4, k: 5, &blk)
+            def optional(o, n) = o.__send__(n, 1)
+            $target = DispatchArguments.new
+            $block = proc { |x| x + 10 }
+            100.times do
+              literal($target, :combine); nil_block($target, :combine, nil)
+              proc_block($target, :combine, $block); optional($target, :optional)
+            end
+        ");
+        assert_eq!(assert_compiles("
+            [literal($target, :combine), nil_block($target, :combine, nil),
+             proc_block($target, :combine, $block), optional($target, :optional)]
+        "), "[[1, 2, [3], 4, 5, 11], [1, 2, [3], 4, 5, nil], [1, 2, [3], 4, 5, 11], [1, 2]]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_splat_guard_and_generic_argument_forms() {
+    with_dispatch_profiles(|| {
+        eval("
+            class DispatchSplatTarget
+              def pair(a, b) = a + b
+              def keywords(**kw) = kw
+            end
+            def explicit(o, n, args) = o.__send__(n, *args)
+            def packed(o, args) = o.__send__(*args)
+            def forwarding(o, ...) = o.__send__(...)
+            def keywords(o, n, kw) = o.__send__(n, **kw)
+            $target = DispatchSplatTarget.new
+            100.times do
+              explicit($target, :pair, [1, 2]); packed($target, [:pair, 1, 2])
+              forwarding($target, :pair, 1, 2); keywords($target, :keywords, {k: 5})
+            end
+        ");
+        assert_eq!(assert_compiles_allowing_exits("
+            error = begin
+              explicit($target, :pair, [1])
+            rescue ArgumentError => e
+              e.class.name
+            end
+            [explicit($target, :pair, [3, 4]), packed($target, [:pair, 3, 4]),
+             forwarding($target, :pair, 3, 4), keywords($target, :keywords, {k: 6}), error]
+        "), "[7, 7, 7, {k: 6}, \"ArgumentError\"]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_gc_and_tracepoint() {
+    with_dispatch_profiles(|| {
+        eval("
+            class DispatchTraceTarget
+              def inc(x) = x + 1
+              def dec(x) = x - 1
+              def third(x) = x + 2
+            end
+            def entry(o, name) = o.__send__(name, 10)
+            $target = DispatchTraceTarget.new
+            100.times { |i| entry($target, i.even? ? :inc : :dec) }
+        ");
+        assert_eq!(assert_compiles_allowing_exits("
+            GC.verify_compaction_references(expand_heap: true, toward: :empty)
+            values = [entry($target, :inc), entry($target, :dec), entry($target, :third)]
+            events = []
+            trace = TracePoint.new(:call) do |tp|
+              events << tp.method_id if tp.defined_class == DispatchTraceTarget
+            end
+            trace.enable { values << entry($target, :inc) }
+            [values, events]
+        "), "[[11, 9, 12, 11], [:inc]]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_reflective_bailout_evaluates_arguments_once() {
+    with_dispatch_profiles(|| {
+        eval("
+            class DispatchSideEffects
+              def inc(x) = block_given? ? yield(x) : x + 1
+            end
+            def entry(o, n, blk) = o.__send__(n, ($calls += 1; 10), &blk)
+            $target = DispatchSideEffects.new
+            $calls = 0
+            call = method(:entry)
+            100.times { call.call($target, :inc, nil) }
+            $calls = 0
+        ");
+        assert_eq!(assert_compiles_allowing_exits("
+            assigned = nil
+            value = entry($target, :inc, proc { |x| assigned = x + 2 })
+            [value, assigned, $calls]
+        "), "[12, 12, 1]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_reflective_inlined_exit_and_stack_recovery() {
+    with_dispatch_profiles(|| {
+        eval("
+            class DispatchRecursive
+              def inc(x) = x + 1
+              def recurse(n)
+                return 5 if n == 0
+                __send__(:recurse, n - 1)
+              end
+            end
+            class DispatchExitValue
+              def +(n) = 42
+            end
+            def entry(o, n, x) = o.__send__(n, ($calls += 1; x))
+            $target = DispatchRecursive.new
+            $calls = 0
+            call = method(:entry)
+            recurse = $target.method(:recurse)
+            100.times { call.call($target, :inc, 10); recurse.call(2) }
+            $calls = 0
+        ");
+        assert_eq!(assert_compiles_allowing_exits("
+            [entry($target, :inc, DispatchExitValue.new), $calls]
+        "), "[42, 1]");
+        assert_eq!(assert_compiles_allowing_exits("
+            Fiber.new do
+              overflow = false
+              begin
+                $target.recurse(100_000)
+              rescue SystemStackError
+                overflow = true
+              end
+              [overflow, $target.recurse(2)]
+            end.resume
+        "), "[true, 5]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_refined_targets_keep_ruby_dispatch() {
+    with_dispatch_profiles(|| {
+        assert_eq!(assert_compiles_allowing_exits("
+            class DispatchRefined
+              def inc(x) = x + 1
+            end
+            module DispatchRefinement
+              refine DispatchRefined do
+                def inc(x) = x + 100
+              end
+            end
+            using DispatchRefinement
+            def entry(o, n) = o.__send__(n, 10)
+            target = DispatchRefined.new
+            100.times { raise unless entry(target, :inc) == 110 }
+            entry(target, :inc)
+        "), "110");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_two_ractors() {
+    with_dispatch_profiles(|| {
+        assert_eq!(assert_compiles_allowing_exits("
+            class DispatchRactorTarget
+              def inc(x) = x + 1
+              def dec(x) = x - 1
+            end
+            def ractor_dispatch(o, n) = o.__send__(n, 10)
+            ractors = 2.times.map do
+              Ractor.new do
+                target = DispatchRactorTarget.new
+                sum = 0
+                100.times { |i| sum += ractor_dispatch(target, i.even? ? :inc : :dec) }
+                sum
+              end
+            end
+            ractors.map(&:value)
+        "), "[1000, 1000]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_unseen_cross_pair_uses_original_lookup() {
+    with_dispatch_profiles(|| {
+        eval("
+            class DispatchPairA
+              def a(x) = x + 1
+            end
+            class DispatchPairB
+              def b(x) = x - 1
+            end
+            def entry(o, name) = o.__send__(name, 10)
+            $a = DispatchPairA.new
+            $b = DispatchPairB.new
+            100.times { entry($a, :a); entry($b, :b) }
+        ");
+        let before = get_or_create_iseq_payload(get_method_iseq("self", "entry")).versions.len();
+        assert_eq!(assert_compiles_allowing_exits("
+            error = begin
+              entry($a, :b)
+            rescue NoMethodError => e
+              [e.class.name, e.name, e.args, e.private_call?, e.receiver.equal?($a)]
+            end
+            [entry($a, :a), entry($b, :b), error]
+        "), "[11, 9, [\"NoMethodError\", :b, [10], true, true]]");
+        assert_eq!(get_or_create_iseq_payload(get_method_iseq("self", "entry")).versions.len(), before);
+    });
+}
+
+#[test]
+fn test_dispatch_chain_rejected_forms_preserve_conversion_and_errors() {
+    with_dispatch_profiles(|| {
+        eval("
+            class DispatchGenericTarget
+              def target(x) = yield(x)
+              def forward(...) = target(...)
+            end
+            class DispatchBlockConversion
+              def to_proc; $conversions += 1; proc { |x| x + 1 }; end
+            end
+            def converted(o, n, blk) = o.__send__(n, 10, &blk)
+            def no_name(o) = o.__send__
+            def no_packed_name(o) = o.__send__(*[])
+            $target = DispatchGenericTarget.new
+            $block = DispatchBlockConversion.new
+            $conversions = 0
+            100.times { converted($target, :target, $block); converted($target, :forward, $block) }
+            $conversions = 0
+        ");
+        assert_eq!(assert_compiles_allowing_exits("
+            values = [converted($target, :target, $block), converted($target, :forward, $block)]
+            a = begin; no_name($target); rescue ArgumentError => e; e.class.name; end
+            b = begin; no_packed_name($target); rescue ArgumentError => e; e.class.name; end
+            [values, $conversions, a, b]
+        "), "[[11, 11], 2, \"ArgumentError\", \"ArgumentError\"]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_missing_definition_removal_and_handler_change() {
+    check_missing_dispatch_mutation("", "
+        values = [mutation_entry($proxy)]
+        class DispatchMutation; def inc(x) = 99; end
+        values << mutation_entry($proxy)
+        100.times { mutation_entry($proxy) }
+        class DispatchMutation; remove_method :inc; end
+        values << mutation_entry($proxy)
+        100.times { mutation_entry($proxy) }
+        class DispatchMutation; def method_missing(name, x) = 77; end
+        values << mutation_entry($proxy)
+        values
+    ", "[11, 99, 11, 77]");
+}
+
+#[test]
+fn test_dispatch_chain_missing_ancestor_definition() {
+    check_missing_dispatch_mutation("", "
+        class DispatchMutationBase; def inc(x) = 99; end
+        mutation_entry($proxy)
+    ", "99");
+}
+
+#[test]
+fn test_dispatch_chain_missing_include_definition() {
+    check_missing_dispatch_mutation("", "
+        module DispatchIncluded; def inc(x) = 99; end
+        DispatchMutation.include(DispatchIncluded)
+        mutation_entry($proxy)
+    ", "99");
+}
+
+#[test]
+fn test_dispatch_chain_missing_prepend_definition() {
+    check_missing_dispatch_mutation("", "
+        module DispatchPrepended; def inc(x) = 99; end
+        DispatchMutation.prepend(DispatchPrepended)
+        mutation_entry($proxy)
+    ", "99");
+}
+
+#[test]
+fn test_dispatch_chain_missing_handler_redefinition() {
+    check_missing_dispatch_mutation("", "
+        class DispatchMutation; def method_missing(name, x) = 77; end
+        mutation_entry($proxy)
+    ", "77");
+}
+
+#[test]
+fn test_dispatch_chain_missing_refined_handler_redefinition() {
+    check_missing_dispatch_mutation("
+        module DispatchMutationRefinement
+          refine DispatchMutation do
+            def method_missing(name, x) = 123
+          end
+        end
+        using DispatchMutationRefinement
+    ", "
+        class DispatchMutation; def method_missing(name, x) = 88; end
+        mutation_entry($proxy)
+    ", "88");
+}
+
+#[test]
+fn test_dispatch_chain_missing_handler_removal() {
+    check_missing_dispatch_mutation("", "
+        class DispatchMutation; remove_method :method_missing; end
+        mutation_entry($proxy)
+    ", "77");
+}
+
+#[test]
+fn test_dispatch_chain_missing_handler_prepend() {
+    check_missing_dispatch_mutation("", "
+        module DispatchHandler; def method_missing(name, x) = 88; end
+        DispatchMutation.prepend(DispatchHandler)
+        mutation_entry($proxy)
+    ", "88");
+}
+
+#[test]
+fn test_dispatch_chain_missing_visibility_transition() {
+    check_missing_dispatch_mutation("class DispatchMutation; private def inc(x) = 99; end", "
+        values = [mutation_entry($proxy)]
+        class DispatchMutation; public :inc; end
+        values << mutation_entry($proxy)
+        100.times { mutation_entry($proxy) }
+        class DispatchMutation; private :inc; end
+        values << mutation_entry($proxy)
+        values
+    ", "[11, 99, 11]");
+}
+
+#[test]
+fn test_dispatch_chain_missing_singleton_override() {
+    check_missing_dispatch_mutation("", "
+        def $proxy.inc(x) = 99
+        mutation_entry($proxy)
+    ", "99");
+}
+
+#[test]
+fn test_dispatch_chain_target_undefinition() {
+    check_missing_dispatch_mutation("class DispatchMutation; def inc(x) = 99; end", "
+        class DispatchMutation; undef_method :inc; end
+        mutation_entry($proxy)
+    ", "11");
+}
+
+#[test]
+fn test_dispatch_chain_missing_handler_undefinition() {
+    check_missing_dispatch_mutation("", "
+        class DispatchMutation; undef_method :method_missing; end
+        begin
+          mutation_entry($proxy)
+        rescue NoMethodError => e
+          [e.class.name, e.name, e.args, e.receiver.equal?($proxy)]
+        end
+    ", "[\"NoMethodError\", :inc, [10], true]");
+}
+
+#[test]
+fn test_dispatch_chain_fixed_and_rest_proxy_delegation() {
+    with_dispatch_profiles(|| {
+        eval("
+            class DispatchDelegateTarget
+              def inc(x) = x + 1
+            end
+            class DispatchFixedProxy
+              def initialize(target); @target = target; end
+              def method_missing(name, x); @target.__send__(name, x); end
+            end
+            class DispatchRestProxy
+              def initialize(target); @target = target; end
+              def method_missing(name, *args); @target.__send__(name, *args); end
+            end
+            def fixed_entry(o, x) = o.inc(x)
+            def rest_entry(o, x) = o.inc(x)
+            target = DispatchDelegateTarget.new
+            $fixed = DispatchFixedProxy.new(target)
+            $rest = DispatchRestProxy.new(target)
+            100.times { fixed_entry($fixed, 10); rest_entry($rest, 10) }
+        ");
+        assert_eq!(assert_compiles("[fixed_entry($fixed, 10), rest_entry($rest, 10)]"), "[11, 11]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_missing_handler_super_reason_fields() {
+    with_dispatch_profiles(|| {
+        set_inline_threshold(0);
+        eval("
+            class DispatchMissingReason
+              private def secret(x) = x
+              protected def hidden(x) = x
+              def method_missing(name, *args); super; end
+              def bare = undefined_bare_name
+              def functional = undefined_functional_name(10)
+            end
+            def explicit_private(o) = o.secret(10)
+            def public_private(o) = o.public_send(:secret, 10)
+            def public_protected(o) = o.public_send(:hidden, 10)
+            def reflective_missing(o) = o.__send__(:absent, 10)
+            def public_missing(o) = o.public_send(:absent, 10)
+            def ordinary_missing(o) = o.absent(10)
+            def fields
+              yield
+            rescue NoMethodError => e
+              [e.class.name, e.name, e.args, e.private_call?, e.receiver.equal?($proxy)]
+            rescue NameError => e
+              [e.class.name, e.name, e.receiver.equal?($proxy)]
+            end
+            $proxy = DispatchMissingReason.new
+            100.times do
+              fields { explicit_private($proxy) }; fields { public_private($proxy) }
+              fields { public_protected($proxy) }; fields { reflective_missing($proxy) }
+              fields { public_missing($proxy) }; fields { ordinary_missing($proxy) }
+              fields { $proxy.bare }; fields { $proxy.functional }
+            end
+        ");
+        assert_eq!(assert_compiles_allowing_exits("
+            [fields { explicit_private($proxy) }, fields { public_private($proxy) },
+             fields { public_protected($proxy) }, fields { reflective_missing($proxy) },
+             fields { public_missing($proxy) }, fields { ordinary_missing($proxy) },
+             fields { $proxy.bare }, fields { $proxy.functional }]
+        "), "[[\"NoMethodError\", :secret, [10], false, true], [\"NoMethodError\", :secret, [10], false, true], [\"NoMethodError\", :hidden, [10], false, true], [\"NoMethodError\", :absent, [10], true, true], [\"NoMethodError\", :absent, [10], false, true], [\"NoMethodError\", :absent, [10], false, true], [\"NameError\", :undefined_bare_name, true], [\"NoMethodError\", :undefined_functional_name, [10], true, true]]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_handler_names_and_direct_invocation() {
+    with_dispatch_profiles(|| {
+        eval("
+            class DispatchNameHandler
+              def method_missing(name, x) = [name, x]
+              private def secret(x) = x + 1
+              protected def hidden(x) = x + 2
+            end
+            def reflective(o, name) = o.__send__(name, 10)
+            def public_call(o, name) = o.public_send(name, 10)
+            def direct(o, name) = o.method_missing(name, 10)
+            $proxy = DispatchNameHandler.new
+            100.times do
+              reflective($proxy, 'inc'); public_call($proxy, :secret)
+              public_call($proxy, :hidden); direct($proxy, 'inc')
+            end
+        ");
+        assert_eq!(assert_compiles_allowing_exits("
+            [reflective($proxy, 'inc'), public_call($proxy, :secret), public_call($proxy, :hidden),
+             reflective($proxy, :secret), direct($proxy, 'inc')]
+        "), "[[:inc, 10], [:secret, 10], [:hidden, 10], 11, [\"inc\", 10]]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_missing_keywords_blocks_and_guard_bailout() {
+    with_dispatch_profiles(|| {
+        eval("
+            class DispatchMissingArguments
+              def method_missing(name, x, k:)
+                [name, x, k, block_given? ? yield(x) : nil]
+              end
+            end
+            def literal(o) = o.inc(10, k: 3) { |x| x + 1 }
+            def nil_block(o, blk) = o.inc(($calls += 1; 10), k: 3, &blk)
+            $proxy = DispatchMissingArguments.new
+            $calls = 0
+            call = method(:nil_block)
+            100.times { literal($proxy); call.call($proxy, nil) }
+            $calls = 0
+        ");
+        assert_eq!(assert_compiles_allowing_exits("
+            assigned = nil
+            value = nil_block($proxy, proc { |x| assigned = x + 2 })
+            [literal($proxy), value, assigned, $calls]
+        "), "[[:inc, 10, 3, 11], [:inc, 10, 3, 12], 12, 1]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_missing_stack_overflow_and_callee_exit() {
+    with_dispatch_profiles(|| {
+        set_inline_threshold(100);
+        eval("
+            class DispatchMissingRecursive
+              def method_missing(name, n)
+                return n + 1 if name == :inc
+                n == 0 ? 5 : again(n - 1)
+              end
+            end
+            class DispatchMissingExitValue
+              def +(x) = 42
+            end
+            def entry(o, x) = o.inc(($calls += 1; x))
+            def recursive_entry(o, n) = o.again(n)
+            $proxy = DispatchMissingRecursive.new
+            $calls = 0
+            call = method(:entry)
+            recurse = method(:recursive_entry)
+            100.times { call.call($proxy, 10); recurse.call($proxy, 2) }
+            $calls = 0
+        ");
+        assert_eq!(assert_compiles_allowing_exits("
+            [entry($proxy, DispatchMissingExitValue.new), $calls]
+        "), "[42, 1]");
+        assert_eq!(assert_compiles_allowing_exits("
+            Fiber.new do
+              overflow = false
+              begin
+                recursive_entry($proxy, 100_000)
+              rescue SystemStackError
+                overflow = true
+              end
+              [overflow, recursive_entry($proxy, 2)]
+            end.resume
+        "), "[true, 5]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_missing_handler_ignores_refinement() {
+    with_dispatch_profiles(|| {
+        assert_eq!(assert_compiles_allowing_exits("
+            class DispatchRefinedHandler
+              def method_missing(name, x) = x + 1
+            end
+            module DispatchHandlerRefinement
+              refine DispatchRefinedHandler do
+                def method_missing(name, x) = x + 100
+              end
+            end
+            using DispatchHandlerRefinement
+            def entry(o) = o.inc(10)
+            target = DispatchRefinedHandler.new
+            100.times { raise unless entry(target) == 11 }
+            [entry(target), target.method_missing(:inc, 10)]
+        "), "[11, 110]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_missing_compaction_tracing_and_generic_receiver() {
+    with_dispatch_profiles(|| {
+        eval("
+            class DispatchMissingGC
+              def method_missing(name, x) = x + 1
+            end
+            class DispatchMissingOther
+              def method_missing(name, x) = x + 2
+            end
+            def entry(o) = o.inc(10)
+            $proxy = DispatchMissingGC.new
+            100.times { entry($proxy) }
+        ");
+        assert_eq!(assert_compiles_allowing_exits("
+            GC.verify_compaction_references(expand_heap: true, toward: :empty)
+            values = [entry($proxy), entry(DispatchMissingOther.new)]
+            events = []
+            trace = TracePoint.new(:call) do |tp|
+              events << tp.method_id if tp.defined_class == DispatchMissingGC
+            end
+            trace.enable { values << entry($proxy) }
+            [values, events]
+        "), "[[11, 12, 11], [:method_missing]]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_missing_two_ractors() {
+    with_dispatch_profiles(|| {
+        assert_eq!(assert_compiles_allowing_exits("
+            class DispatchMissingRactor
+              def method_missing(name, x) = x + 1
+            end
+            def missing_ractor_entry(o) = o.inc(10)
+            ractors = 2.times.map do
+              Ractor.new do
+                proxy = DispatchMissingRactor.new
+                sum = 0
+                100.times { sum += missing_ractor_entry(proxy) }
+                sum
+              end
+            end
+            ractors.map(&:value)
+        "), "[1100, 1100]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_public_send_private_handler_alias() {
+    with_dispatch_profiles(|| {
+        set_inline_threshold(0);
+        eval("
+            class DispatchPublicHandlerAlias
+              private
+              def method_missing(name, *args) = [name, args]
+              alias handler method_missing
+            end
+            def entry(o) = o.public_send(:handler, :inc, 10)
+            $proxy = DispatchPublicHandlerAlias.new
+            100.times { entry($proxy) }
+        ");
+        assert_eq!(assert_compiles("entry($proxy)"), "[:inc, [10]]");
+    });
+}
+
+#[test]
+fn test_dispatch_chain_discarded_refined_handler_cmes_survive_gc() {
+    with_dispatch_profiles(|| {
+        set_inline_threshold(0);
+        assert_eq!(assert_compiles_allowing_exits("
+            sum = 0
+            32.times do
+              klass = Class.new
+              klass.class_eval('def method_missing(name, x) = x + 1')
+              refinement = Module.new do
+                refine klass do
+                  def method_missing(name, x) = 123
+                end
+              end
+              holder = Module.new
+              holder.module_eval('def self.entry(o) = o.inc(10)')
+              object = klass.new
+              entry = holder.method(:entry)
+              100.times { raise unless entry.call(object) == 11 }
+              klass.class_eval('def method_missing(name, x) = x + 2')
+              sum += entry.call(object)
+            end
+            GC.start(full_mark: true, immediate_sweep: true)
+            2.times { GC.verify_compaction_references(expand_heap: true, toward: :empty) }
+            sum
+        "), "384");
+    });
 }
 
 #[test]
