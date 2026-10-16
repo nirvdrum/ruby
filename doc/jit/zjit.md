@@ -541,6 +541,10 @@ invalidation machinery. Reflective forwardable callees, keyword splats, and
 non-ISEQ targets remain generic; ordinary nonreflective specializations are
 unchanged.
 
+Only dispatch-chain miss tails are terminal to ordinary type specialization.
+Existing receiver-chain fallbacks remain eligible for its established
+specializations; the reflective dispatch pass leaves those fallbacks alone.
+
 ## ZJIT Glossary
 
 This glossary contains terms that are helpful for understanding ZJIT.

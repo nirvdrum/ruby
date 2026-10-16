@@ -22627,15 +22627,12 @@ mod hir_opt_tests {
         let calls = hir_iseq_call_args(&function, callee);
         assert_eq!(calls.len(), 1, "BasicObject#!= must still inline");
         assert_eq!(calls[0].len(), 1);
-        let (recv, args, state) = assert_hir_single_fallback(&function, "==", SendPolymorphicFallback, 1, None);
-        assert_hir_const(&function, recv, object);
-        assert_eq!(args, calls[0], "terminal dispatch must retain the caller's argument");
-        let frame = function.frame_state(state);
-        assert_eq!(frame.iseq, callee);
-        assert_eq!(frame.stack().copied().collect::<Vec<_>>(), vec![recv, args[0]]);
-        let Insn::BoolNegate { val } = function.find(hir_return_value(&function)) else { panic!("!= must negate the generic == result") };
-        assert!(matches!(function.find(val), Insn::Send { reason: SendPolymorphicFallback, .. }));
-        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::SendDirect(_) | Insn::IsBitEqual { .. })));
+        let Insn::BoolNegate { val } = function.find(hir_return_value(&function)) else { panic!("!= must negate the specialized == result") };
+        let Insn::BoxBool { val } = function.find(val) else { panic!("expected a boxed identity comparison") };
+        let Insn::IsBitEqual { left, right } = function.find(val) else { panic!("expected direct object identity comparison") };
+        assert_hir_const(&function, left, object);
+        assert_eq!(right, calls[0][0]);
+        assert!(!dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::Send { .. } | Insn::SendDirect(_))));
         assert_eq!(eval("test(nil) && !test(NULL)"), Qtrue);
         assert_snapshot!(hir_string_function(&function), @"
         fn test@<compiled>:8:
@@ -22658,8 +22655,10 @@ mod hir_opt_tests {
           PatchPoint NoSingletonClass(Object@0x1018)
           PatchPoint MethodRedefined(Object@0x1018, !=@0x1020, cme:0x1028)
           PushInlineFrame :!=, v16 (0x1050), num_args=1
-          v52:BasicObject = Send v16, :==, v10 # SendFallbackReason: Send: polymorphic fallback
-          v55:BoolExact = BoolNegate v52
+          PatchPoint MethodRedefined(Object@0x1018, ==@0x1070, cme:0x1078)
+          v70:CBool = IsBitEqual v16, v10
+          v71:BoolExact = BoxBool v70
+          v55:BoolExact = BoolNegate v71
           PatchPoint NoEPEscape(!=)
           PopInlineFrame
           CheckInterrupts
@@ -28178,7 +28177,7 @@ mod hir_opt_tests {
         let mut final_hir = iseq_to_hir(iseq).unwrap();
         final_hir.optimize();
         final_hir.validate().unwrap();
-        assert_eq!(dispatch_chain_insns(&final_hir).filter(|insn| matches!(insn, Insn::FixnumAdd { .. })).count(), 1);
+        assert_eq!(dispatch_chain_insns(&final_hir).filter(|insn| matches!(insn, Insn::FixnumAdd { .. })).count(), 2);
         assert_eq!(dispatch_chain_insns(&final_hir).filter(|insn| matches!(insn, Insn::FloatAdd { .. })).count(), 1);
         let branches: Vec<_> = dispatch_chain_insns(&final_hir).filter_map(|insn| match insn {
             Insn::CondBranchHasType(data) => Some(data),
@@ -28187,14 +28186,20 @@ mod hir_opt_tests {
         assert_eq!(branches.len(), 2);
         assert!(branches.iter().any(|branch| branch.expected.bit_equal(types::Fixnum)));
         assert!(branches.iter().any(|branch| branch.expected.bit_equal(types::Flonum)));
-        let (recv, args, state) = assert_hir_single_fallback(&final_hir, "+", SendPolymorphicFallback, 1, None);
-        assert_hir_const(&final_hir, args[0], VALUE::fixnum_from_usize(1));
+        let (recv, right, state) = dispatch_chain_insns(&final_hir).find_map(|insn| match insn {
+            Insn::FixnumAdd { left, right, .. } => match final_hir.find(*left) {
+                Insn::GuardType { val, state, .. } => Some((val, *right, state)),
+                _ => None,
+            },
+            _ => None,
+        }).expect("ordinary specialization must retain a guarded Fixnum tail");
+        assert_hir_const(&final_hir, right, VALUE::fixnum_from_usize(1));
         let frame = final_hir.frame_state(state);
         assert_eq!(frame.locals().next().copied(), Some(recv));
-        assert_eq!(frame.stack().copied().collect::<Vec<_>>(), vec![recv, args[0]]);
+        assert_eq!(frame.stack().copied().collect::<Vec<_>>(), vec![recv, right]);
         assert!(branches.iter().all(|branch| final_hir.find_id(branch.val) == recv));
-        // Both specialized arms and the generic tail must feed the value stored
-        // into @a and returned, rather than replaying the arithmetic on a miss.
+        assert!(!dispatch_chain_insns(&final_hir).any(|insn| matches!(insn, Insn::Send { .. })));
+        // Specialized arms and the guarded ordinary tail feed the stored return value.
         let result = hir_return_value(&final_hir);
         let ivar = unsafe { rb_get_symbol_id(eval(":@a")) };
         assert!(dispatch_chain_insns(&final_hir).any(|insn| matches!(insn,
@@ -28275,7 +28280,7 @@ mod hir_opt_tests {
           v8:BasicObject = LoadArg :x@1
           Jump bb3(v7, v8)
         bb3(v11:HeapBasicObject, v12:BasicObject):
-          v88:NilClass = Const Value(nil)
+          v92:NilClass = Const Value(nil)
           v17:Fixnum[1] = Const Value(1)
           v20:CShape = LoadField v11, :shape_id@0x1001
           v21:CShape[0x1002] = Const CShape(0x1002)
@@ -28313,9 +28318,11 @@ mod hir_opt_tests {
           v87:Float = FloatAdd v54, v43
           Jump bb9(v87)
         bb10():
-          v57:BasicObject = Send v12, :+, v43 # SendFallbackReason: Send: polymorphic fallback
-          Jump bb9(v57)
-        bb9(v46:BasicObject):
+          PatchPoint MethodRedefined(Integer@0x1008, +@0x1010, cme:0x1018)
+          v90:Fixnum = GuardType v12, Fixnum recompile
+          v91:Fixnum = FixnumAdd v90, v43
+          Jump bb9(v91)
+        bb9(v46:Float|Fixnum):
           v65:CShape = LoadField v11, :shape_id@0x1001
           v66:CShape[0x1002] = Const CShape(0x1002)
           v67:CBool = IsBitEqual v65, v66

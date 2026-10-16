@@ -5426,7 +5426,7 @@ impl Function {
             for insn_id in old_insns {
                 let resolved = self.resolve(insn_id);
                 match resolved.insn(self) {
-                    Insn::Send { reason: SendPolymorphicFallback | SendDispatchFallback, .. } => {
+                    Insn::Send { reason: SendDispatchFallback, .. } => {
                         self.push_insn_id(block, insn_id);
                     }
                     &Insn::Send { mut recv, cd, state, block: send_block, caller_splat_length, .. } => {
