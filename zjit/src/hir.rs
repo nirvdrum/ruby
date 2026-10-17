@@ -6329,8 +6329,9 @@ impl Function {
 
         // Fail fast if inlining is enabled but we've exhausted our inlining budget.
         // Otherwise, `can_inline` and `should_inline` will make local inlining decisions.
+        // Match should_inline's executable-instruction estimate, not allocated metadata slots.
         let budget = get_option!(inline_budget);
-        if budget != INLINE_BUDGET_UNLIMITED && self.insns.len() > budget {
+        if budget != INLINE_BUDGET_UNLIMITED && self.num_instructions > budget {
             incr_counter!(inline_reject_budget_exceeded);
             return false;
         }

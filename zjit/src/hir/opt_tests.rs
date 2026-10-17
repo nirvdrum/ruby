@@ -28623,7 +28623,7 @@ mod hir_opt_tests {
     #[test]
     fn test_inline_budget_rejects_when_exceeded() {
         // The same workload as test_inline_arithmetic_method, which we know inlines
-        // successfully under the default settings (budget=500, threshold=30). Setting
+        // successfully with threshold=30. Setting
         // the budget to 1 forces should_inline to bail on the budget check before
         // reaching any other rejection reason. To verify the budget specifically is
         // what blocked the inline (not e.g. the size threshold or a parameter-shape
@@ -28668,6 +28668,41 @@ mod hir_opt_tests {
             "Expected SendDirect to remain in HIR when budget is exceeded:\n{result}");
         assert!(!result.contains("PushInlineFrame"),
             "Expected no PushInlineFrame in HIR when budget is exceeded:\n{result}");
+    }
+
+    #[test]
+    fn test_dispatch_chain_inline_budget_ignores_metadata() {
+        with_dispatch_chain_options(30, || {
+            eval("
+                class DispatchBudgetTarget
+                  def m0(x) = x + 0
+                  def m1(x) = x + 1
+                  def m2(x) = x + 2
+                  def m3(x) = x + 3
+                  def m4(x) = x + 4
+                  def m5(x) = x + 5
+                  def m6(x) = x + 6
+                  def m7(x) = x + 7
+                end
+                def dispatch_budget_finish(x) = x * 2
+                def test(o, name, x)
+                  value = dispatch_budget_finish(x)
+                  first = o.__send__(name, value)
+                  o.__send__(name, first)
+                end
+                target = DispatchBudgetTarget.new
+                names = [:m0, :m1, :m2, :m3, :m4, :m5, :m6, :m7]
+                128.times do |i|
+                  raise unless test(target, names[i % 8], 10) == 20 + 2 * (i % 8)
+                end
+            ");
+            let old_budget = get_option!(inline_budget);
+            unsafe { OPTIONS.as_mut().unwrap().inline_budget = 200; }
+            let function = dispatch_chain_hir("test");
+            unsafe { OPTIONS.as_mut().unwrap().inline_budget = old_budget; }
+            assert!(dispatch_chain_insns(&function).any(|insn| matches!(insn, Insn::FixnumMult { .. })),
+                "dispatch metadata must not prevent the ordinary finish call from inlining:\n{}", hir_string_function(&function));
+        });
     }
 
     #[test]
