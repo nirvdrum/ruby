@@ -28820,6 +28820,10 @@ mod hir_opt_tests {
             "Expected PushInlineFrame in inlined HIR:\n{result}");
         assert!(!result.contains("SendDirect"),
             "Expected SendDirect to be replaced after inlining:\n{result}");
+        assert!(!result.contains("ObjectAllocClass"), "Expected both allocations to be scalar-replaced:\n{result}");
+        assert!(result.contains("VirtualObject"), "Expected VirtualObject in HIR:\n{result}");
+        assert!(!result.contains("StoreField"), "Expected ivar stores to be removed:\n{result}");
+        assert!(!result.contains("LoadField"), "Expected ivar and shape loads to be forwarded:\n{result}");
 
         assert_snapshot!(result, @"
         fn test@<compiled>:15:
@@ -28838,68 +28842,337 @@ mod hir_opt_tests {
           v15:Fixnum[1] = Const Value(1)
           v17:Fixnum[2] = Const Value(2)
           PatchPoint MethodRedefined(Point@0x1008, new@0x1009, cme:0x1010)
-          v85:ObjectSubclass[class_exact:Point] = ObjectAllocClass Point:VALUE(0x1008)
+          PatchPoint NoNewObjHook
+          v268:ObjectSubclass[class_exact:Point] = VirtualObject Point:VALUE(0x1008)
           PatchPoint NoSingletonClass(Point@0x1008)
           PatchPoint MethodRedefined(Point@0x1008, initialize@0x1038, cme:0x1040)
-          PushInlineFrame :initialize, v85 (0x1068), num_args=2
-          v116:CShape = LoadField v85, :shape_id@0x1088
-          v117:CShape[0x1089] = GuardBitEquals v116, CShape(0x1089) recompile
-          StoreField v85, :@x@0x108a, v15
-          v120:CShape[0x108b] = Const CShape(0x108b)
-          StoreField v85, :shape_id@0x1088, v120
+          PushInlineFrame :initialize, v268 (0x1068), num_args=2
           PatchPoint NoEPEscape(initialize)
-          StoreField v85, :@y@0x108c, v17
-          v134:CShape[0x108d] = Const CShape(0x108d)
-          StoreField v85, :shape_id@0x1088, v134
           PopInlineFrame
-          v42:NilClass = Const Value(nil)
-          v45:ClassSubclass[Point@0x1008] = Const Value(VALUE(0x1008))
           v47:Fixnum[1] = Const Value(1)
           v49:Fixnum[2] = Const Value(2)
-          v95:ObjectSubclass[class_exact:Point] = ObjectAllocClass Point:VALUE(0x1008)
-          PushInlineFrame :initialize, v95 (0x1068), num_args=2
-          v155:CShape = LoadField v95, :shape_id@0x1088
-          v156:CShape[0x1089] = GuardBitEquals v155, CShape(0x1089) recompile
-          StoreField v95, :@x@0x108a, v47
-          v159:CShape[0x108b] = Const CShape(0x108b)
-          StoreField v95, :shape_id@0x1088, v159
-          StoreField v95, :@y@0x108c, v49
-          v173:CShape[0x108d] = Const CShape(0x108d)
-          StoreField v95, :shape_id@0x1088, v173
-          PopInlineFrame
-          PatchPoint MethodRedefined(Point@0x1008, ==@0x108e, cme:0x1090)
-          PushInlineFrame :==, v85 (0x10b8), num_args=1
-          v192:CShape = LoadField v85, :shape_id@0x1088
-          v193:CShape[0x108d] = GuardBitEquals v192, CShape(0x108d) recompile
-          v194:BasicObject = LoadField v85, :@x@0x108a
+          v271:ObjectSubclass[class_exact:Point] = VirtualObject Point:VALUE(0x1008)
+          PatchPoint MethodRedefined(Point@0x1008, ==@0x1088, cme:0x1090)
+          PushInlineFrame :==, v268 (0x10b8), num_args=1
           PatchPoint NoEPEscape(==)
           PatchPoint MethodRedefined(Point@0x1008, x@0x10d8, cme:0x10e0)
-          PatchPoint MethodRedefined(Integer@0x1108, ==@0x108e, cme:0x1110)
-          v252:Fixnum = GuardType v194, Fixnum recompile
-          v254:BoolExact = FixnumEq v252, v47
-          v207:CBool = Test v254
-          v208:FalseClass = RefineType v254, Falsy
-          CondBranch v207, bb19(), bb18(v208)
-        bb19():
-          v214:CShape = LoadField v85, :shape_id@0x1088
-          v215:CShape[0x108d] = GuardBitEquals v214, CShape(0x108d) recompile
-          v216:BasicObject = LoadField v85, :@y@0x108c
-          PatchPoint NoEPEscape(==)
-          PatchPoint NoSingletonClass(Point@0x1008)
+          PatchPoint MethodRedefined(Integer@0x1108, ==@0x1088, cme:0x1110)
           PatchPoint MethodRedefined(Point@0x1008, y@0x1138, cme:0x1140)
-          v259:CShape = LoadField v95, :shape_id@0x1088
-          v260:CShape[0x108d] = GuardBitEquals v259, CShape(0x108d) recompile
-          v261:BasicObject = LoadField v95, :@y@0x108c
-          PatchPoint MethodRedefined(Integer@0x1108, ==@0x108e, cme:0x1110)
-          v264:Fixnum = GuardType v216, Fixnum recompile
-          v265:Fixnum = GuardType v261, Fixnum recompile
-          v266:BoolExact = FixnumEq v264, v265
-          Jump bb18(v266)
-        bb18(v230:BoolExact):
+          v279:TrueClass = Const Value(true)
           PopInlineFrame
           CheckInterrupts
-          Return v230
+          Return v279
         ");
+    }
+
+    #[track_caller]
+    fn hir_string_with_snapshots(method: &str) -> String {
+        let iseq = crate::cruby::with_rubyvm(|| get_method_iseq("self", method));
+        unsafe { crate::cruby::rb_zjit_profile_disable(iseq) };
+        let mut function = iseq_to_hir(iseq).unwrap();
+        function.optimize();
+        function.validate().unwrap();
+        format!("{}", FunctionPrinter::with_snapshot(&function))
+    }
+
+    #[track_caller]
+    fn assert_not_scalar_replaced(result: &str) {
+        assert!(result.contains("ObjectAllocClass"), "Expected the allocation to stay real:\n{result}");
+        assert!(!result.contains("VirtualObject"), "Expected no VirtualObject:\n{result}");
+    }
+
+    #[test]
+    fn test_scalar_replace_attr_accessor_object() {
+        eval("
+            class C; attr_accessor :x, :y; end
+            def test(a, b) = (o = C.new; o.x = a; o.y = b; o.x)
+            test(1, 2)
+            test(1, 2)
+        ");
+        let result = hir_string("test");
+        assert!(result.contains("VirtualObject"), "Expected VirtualObject in HIR:\n{result}");
+        assert!(!result.contains("ObjectAllocClass"), "Expected the allocation to be scalar-replaced:\n{result}");
+        assert!(!result.contains("StoreField"), "Expected ivar stores to be removed:\n{result}");
+        assert_snapshot!(result, @"
+        fn test@<compiled>:3:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :a@0x1000
+          v4:BasicObject = LoadField v2, :b@0x1001
+          Jump bb3(v1, v3, v4)
+        bb2():
+          EntryPoint JIT(0)
+          v8:BasicObject = LoadArg :self@0
+          v9:BasicObject = LoadArg :a@1
+          v10:BasicObject = LoadArg :b@2
+          Jump bb3(v8, v9, v10)
+        bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject):
+          v120:NilClass = Const Value(nil)
+          v20:NilClass = Const Value(nil)
+          PatchPoint StableConstantNames(0x1008, C)
+          v23:ClassSubclass[C@0x1010] = Const Value(VALUE(0x1010))
+          PatchPoint NoEPEscape(test)
+          PatchPoint MethodRedefined(C@0x1010, new@0x1011, cme:0x1018)
+          PatchPoint NoNewObjHook
+          v125:ObjectSubclass[class_exact:C] = VirtualObject C:VALUE(0x1010)
+          PatchPoint NoSingletonClass(C@0x1010)
+          PatchPoint MethodRedefined(C@0x1010, initialize@0x1040, cme:0x1048)
+          PatchPoint MethodRedefined(C@0x1010, x=@0x1070, cme:0x1078)
+          PatchPoint MethodRedefined(C@0x1010, y=@0x10a0, cme:0x10a8)
+          PatchPoint MethodRedefined(C@0x1010, x@0x10d0, cme:0x10d8)
+          CheckInterrupts
+          Return v14
+        ");
+    }
+
+    #[test]
+    fn test_scalar_replace_snapshots_track_fields() {
+        eval("
+            class C; attr_accessor :x, :y; end
+            def test(a, b) = (o = C.new; o.x = a; o.y = b; o.x)
+            test(1, 2)
+            test(1, 2)
+        ");
+        let result = hir_string_with_snapshots("test");
+        assert!(result.contains("virtual: ["), "Expected Snapshots with virtual object state:\n{result}");
+        assert_snapshot!(result, @"
+        fn test@<compiled>:3:
+        bb0():
+          Entries bb1, bb2
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :a@0x1000
+          v4:BasicObject = LoadField v2, :b@0x1001
+          Jump bb3(v1, v3, v4)
+        bb2():
+          EntryPoint JIT(0)
+          v8:BasicObject = LoadArg :self@0
+          v9:BasicObject = LoadArg :a@1
+          v10:BasicObject = LoadArg :b@2
+          Jump bb3(v8, v9, v10)
+        bb3(v13:BasicObject, v14:BasicObject, v15:BasicObject):
+          v120:NilClass = Const Value(nil)
+          v18:Any = Snapshot FrameState { pc: 0x1008, stack: [], locals: [a=v14, b=v15, o=v120] }
+          PatchPoint NoTracePoint, v18
+          v20:NilClass = Const Value(nil)
+          v21:Any = Snapshot FrameState { pc: 0x1010, stack: [v20], locals: [a=v14, b=v15, o=v120] }
+          PatchPoint StableConstantNames(0x1018, C), v21
+          v23:ClassSubclass[C@0x1020] = Const Value(VALUE(0x1020))
+          v24:Any = Snapshot FrameState { pc: 0x1028, stack: [v20, v23], locals: [a=v14, b=v15, o=v120] }
+          PatchPoint NoEPEscape(test), v24
+          v26:Any = Snapshot FrameState { pc: 0x1028, stack: [v20, v23], locals: [a=v14, b=v15, o=v120] }
+          PatchPoint MethodRedefined(C@0x1020, new@0x1030, cme:0x1038), v26
+          PatchPoint NoNewObjHook, v26
+          v125:ObjectSubclass[class_exact:C] = VirtualObject C:VALUE(0x1020)
+          v32:Any = Snapshot FrameState { pc: 0x1060, stack: [v125, v125], locals: [a=v14, b=v15, o=v120], virtual: [v125 {}] }
+          PatchPoint NoSingletonClass(C@0x1020), v32
+          PatchPoint MethodRedefined(C@0x1020, initialize@0x1068, cme:0x1070), v32
+          v62:Any = Snapshot FrameState { pc: 0x1098, stack: [v125, v14], locals: [a=v14, b=v15, o=v125], virtual: [v125 {}] }
+          PatchPoint MethodRedefined(C@0x1020, x=@0x10a0, cme:0x10a8), v62
+          v69:Any = Snapshot FrameState { pc: 0x10d0, stack: [v125, v15], locals: [a=v14, b=v15, o=v125], virtual: [v125 { @x: v14 }] }
+          PatchPoint MethodRedefined(C@0x1020, y=@0x10d8, cme:0x10e0), v69
+          v75:Any = Snapshot FrameState { pc: 0x1108, stack: [v125], locals: [a=v14, b=v15, o=v125], virtual: [v125 { @x: v14, @y: v15 }] }
+          PatchPoint MethodRedefined(C@0x1020, x@0x1110, cme:0x1118), v75
+          v79:Any = Snapshot FrameState { pc: 0x1140, stack: [v14], locals: [a=v14, b=v15, o=v125], virtual: [v125 { @x: v14, @y: v15 }] }
+          CheckInterrupts
+          Return v14
+        ");
+    }
+
+    #[test]
+    fn test_scalar_replace_rejects_returned_object() {
+        eval("
+            class C; attr_accessor :x; end
+            def test(a) = (o = C.new; o.x = a; o)
+            test(1)
+            test(1)
+        ");
+        assert_not_scalar_replaced(&hir_string("test"));
+    }
+
+    /// Compile `method` with the given methods excluded from inlining.
+    #[track_caller]
+    fn hir_string_denying_inline(method: &str, deny: &[&str]) -> String {
+        let old_deny = get_option!(inline_deny).clone();
+        unsafe { OPTIONS.as_mut().unwrap().inline_deny.extend(deny.iter().map(|name| name.to_string())); }
+        let result = hir_string(method);
+        unsafe { OPTIONS.as_mut().unwrap().inline_deny = old_deny; }
+        result
+    }
+
+    #[test]
+    fn test_scalar_replace_rejects_object_passed_to_send() {
+        eval("
+            class C; attr_accessor :x; end
+            def callee(o) = @kept = o
+            def test(a) = (o = C.new; o.x = a; callee(o); 1)
+            test(1)
+            test(1)
+        ");
+        assert_not_scalar_replaced(&hir_string_denying_inline("test", &["Object#callee"]));
+    }
+
+    #[test]
+    fn test_scalar_replace_rejects_object_stored_in_another_object() {
+        eval("
+            class C; attr_accessor :x, :y; end
+            def test(a)
+              inner = C.new
+              inner.x = a
+              outer = C.new
+              outer.x = inner
+              outer.y = 1
+              outer.x
+            end
+            test(1)
+            test(1)
+        ");
+        let result = hir_string("test");
+        // `inner` escapes into `outer`'s ivar, so it stays a real allocation.
+        assert!(result.contains("ObjectAllocClass"), "Expected `inner` to stay real:\n{result}");
+    }
+
+    #[test]
+    fn test_scalar_replace_rejects_object_live_across_non_leaf_call() {
+        eval("
+            class C; attr_accessor :x; end
+            def callee = @called = true
+            def test(a) = (o = C.new; o.x = a; callee; o.x)
+            test(1)
+            test(1)
+        ");
+        // `o` is dead after `o.x`, but frame states keep every local, so the non-inlined call's
+        // stack map still references it.
+        assert_not_scalar_replaced(&hir_string_denying_inline("test", &["Object#callee"]));
+    }
+
+    #[test]
+    fn test_scalar_replace_rejects_fields_that_differ_at_merge() {
+        eval("
+            class C; attr_accessor :x; end
+            def test(c)
+              o = C.new
+              o.x = 1
+              o.x = 2 if c
+              o.x
+            end
+            test(true)
+            test(false)
+        ");
+        assert_not_scalar_replaced(&hir_string("test"));
+    }
+
+    #[test]
+    fn test_scalar_replace_rejects_field_written_in_loop() {
+        eval("
+            class C; attr_accessor :x; end
+            def test(n)
+              o = C.new
+              o.x = 0
+              i = 0
+              while i < n
+                o.x = i
+                i += 1
+              end
+              o.x
+            end
+            test(2)
+            test(2)
+        ");
+        assert_not_scalar_replaced(&hir_string("test"));
+    }
+
+    #[test]
+    fn test_scalar_replace_folds_identity_of_distinct_allocations() {
+        eval("
+            class Point
+              attr_accessor :x, :y
+              def initialize(x, y)
+                @x = x
+                @y = y
+              end
+            end
+            def test(a, b, k)
+              p = Point.new(a, b)
+              q = Point.new(b, a)
+              z = k + 1
+              [p.x, q.x, p.equal?(q), z]
+            end
+            test(1, 2, 3)
+            test(1, 2, 3)
+        ");
+        // The caller outgrows the default inline budget before `initialize` gets inlined, and an
+        // object passed to a non-inlined `initialize` escapes.
+        let old_budget = get_option!(inline_budget);
+        unsafe { OPTIONS.as_mut().unwrap().inline_budget = INLINE_BUDGET_UNLIMITED; }
+        let result = hir_string_with_inlining("test");
+        unsafe { OPTIONS.as_mut().unwrap().inline_budget = old_budget; }
+        assert!(!result.contains("ObjectAllocClass"), "Expected both allocations to be scalar-replaced:\n{result}");
+        assert!(!result.contains("IsBitEqual"), "Expected the identity comparison to fold:\n{result}");
+        assert_snapshot!(result, @"
+        fn test@<compiled>:10:
+        bb1():
+          EntryPoint interpreter
+          v1:BasicObject = LoadSelf
+          v2:CPtr = LoadSP
+          v3:BasicObject = LoadField v2, :a@0x1000
+          v4:BasicObject = LoadField v2, :b@0x1001
+          v5:BasicObject = LoadField v2, :k@0x1002
+          Jump bb3(v1, v3, v4, v5)
+        bb2():
+          EntryPoint JIT(0)
+          v11:BasicObject = LoadArg :self@0
+          v12:BasicObject = LoadArg :a@1
+          v13:BasicObject = LoadArg :b@2
+          v14:BasicObject = LoadArg :k@3
+          Jump bb3(v11, v12, v13, v14)
+        bb3(v19:BasicObject, v20:BasicObject, v21:BasicObject, v22:BasicObject):
+          v288:NilClass = Const Value(nil)
+          v287:NilClass = Const Value(nil)
+          v286:NilClass = Const Value(nil)
+          v29:NilClass = Const Value(nil)
+          PatchPoint StableConstantNames(0x1008, Point)
+          v32:ClassSubclass[Point@0x1010] = Const Value(VALUE(0x1010))
+          PatchPoint NoEPEscape(test)
+          PatchPoint MethodRedefined(Point@0x1010, new@0x1011, cme:0x1018)
+          PatchPoint NoNewObjHook
+          v297:ObjectSubclass[class_exact:Point] = VirtualObject Point:VALUE(0x1010)
+          PatchPoint NoSingletonClass(Point@0x1010)
+          PatchPoint MethodRedefined(Point@0x1010, initialize@0x1040, cme:0x1048)
+          PushInlineFrame :initialize, v297 (0x1070), num_args=2
+          PatchPoint NoEPEscape(initialize)
+          PopInlineFrame
+          v300:ObjectSubclass[class_exact:Point] = VirtualObject Point:VALUE(0x1010)
+          v293:NilClass = Const Value(nil)
+          v134:Fixnum[1] = Const Value(1)
+          PatchPoint MethodRedefined(Integer@0x1090, +@0x1098, cme:0x10a0)
+          v186:Fixnum = GuardType v22, Fixnum recompile
+          v187:Fixnum = FixnumAdd v186, v134
+          PatchPoint MethodRedefined(Point@0x1010, x@0x10c8, cme:0x10d0)
+          PatchPoint MethodRedefined(Point@0x1010, equal?@0x10f8, cme:0x1100)
+          v304:FalseClass = Const Value(false)
+          v158:ArrayExact = NewArray v20, v21, v304, v187
+          CheckInterrupts
+          Return v158
+        ");
+    }
+
+    #[test]
+    fn test_scalar_replace_disabled_by_option() {
+        eval("
+            class C; attr_accessor :x, :y; end
+            def test(a, b) = (o = C.new; o.x = a; o.y = b; o.x)
+            test(1, 2)
+            test(1, 2)
+        ");
+        unsafe { OPTIONS.as_mut().unwrap().disable_scalar_replacement = true; }
+        let result = hir_string("test");
+        unsafe { OPTIONS.as_mut().unwrap().disable_scalar_replacement = false; }
+        assert_not_scalar_replaced(&result);
     }
 
     #[test]

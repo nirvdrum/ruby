@@ -171,6 +171,7 @@ class << RubyVM::ZJIT
       :compiled_iseq_count,
       :compiled_side_exit_count,
       :failed_iseq_count,
+      :scalar_replaced_alloc_count,
 
       :compile_time_ns,
       :compile_side_exit_time_ns,
@@ -188,6 +189,7 @@ class << RubyVM::ZJIT
       :compile_hir_remove_duplicate_check_interrupts_time_ns,
       :compile_hir_eliminate_empty_inline_frames_time_ns,
       :compile_hir_eliminate_dead_code_time_ns,
+      :compile_hir_scalar_replace_allocations_time_ns,
       :compile_lir_time_ns,
       :profile_time_ns,
       :gc_time_ns,

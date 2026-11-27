@@ -1102,6 +1102,10 @@ pub enum Insn {
     /// This requires that `class` has the default allocator (for example via `IsMethodCfunc`).
     /// This won't raise or run arbitrary code because `class` has the default allocator.
     ObjectAllocClass { class: VALUE, state: InsnId },
+    /// A scalar-replaced object allocation. Generates no code. Only Snapshots (stack, locals,
+    /// self_val, virtual_objects) and `PushInlineFrame::recv` may reference it; side exits
+    /// materialize it from `FrameState::virtual_objects`.
+    VirtualObject { class: VALUE },
 
     /// Check if the value is truthy and "return" a C boolean. In reality, we will likely fuse this
     /// with IfTrue/IfFalse in the backend to generate jcc.
@@ -1425,7 +1429,8 @@ macro_rules! for_each_operand_impl {
             | Insn::LoadSelf
             | Insn::BreakPoint | Insn::Unreachable
             | Insn::IncrCounter(_)
-            | Insn::IncrCounterPtr { .. } => {}
+            | Insn::IncrCounterPtr { .. }
+            | Insn::VirtualObject { .. } => {}
 
             Insn::IsBlockGiven { block_handler } => {
                 $visit_one!(*block_handler);
@@ -1556,6 +1561,13 @@ macro_rules! for_each_operand_impl {
                 $visit_many!(state.locals);
                 // Option iterates like a 0/1-element slice, so visit_many works here.
                 $visit_many!(state.caller);
+                $visit_many!(state.self_val);
+                for object in &$($mut)? state.virtual_objects {
+                    $visit_one!(object.object);
+                    for field in &$($mut)? object.fields {
+                        $visit_one!(field.val);
+                    }
+                }
             }
             Insn::FixnumAdd { left, right, state }
             | Insn::FixnumSub { left, right, state }
@@ -1899,6 +1911,7 @@ impl Insn {
             Insn::HashDup { .. } => allocates,
             Insn::ObjectAlloc { .. } => effects::Any,
             Insn::ObjectAllocClass { .. } => allocates,
+            Insn::VirtualObject { .. } => effects::Empty,
             Insn::Test { .. } => effects::Empty,
             Insn::IsMethodCfunc { .. } => effects::Any,
             Insn::IsBitEqual { .. } => effects::Empty,
@@ -2080,8 +2093,54 @@ impl Insn {
             | Insn::IncrCounterPtr { .. }
             | Insn::Snapshot { .. }
             | Insn::PatchPoint { .. }
+            | Insn::VirtualObject { .. }
             => false,
             _ => true,
+        }
+    }
+
+    /// True when codegen uses this instruction's FrameState operands only to build side exits or
+    /// to write a PC-only JITFrame (leaf calls with GC, inline frame push/pop). False for anything
+    /// that may publish a stack map decodable while this JIT frame keeps running. A side exit
+    /// can materialize a scalar-replaced object, but a lazily decoded stack map can't, so only the
+    /// former may see one.
+    pub fn never_publishes_stack_map(&self) -> bool {
+        match self {
+            Insn::GuardType { .. }
+            | Insn::GuardBitEquals { .. }
+            | Insn::GuardAnyBitSet { .. }
+            | Insn::GuardNoBitsSet { .. }
+            | Insn::GuardNotNull { .. }
+            | Insn::GuardLess { .. }
+            | Insn::GuardGreaterEq { .. }
+            | Insn::PatchPoint { .. }
+            | Insn::SideExit { .. }
+            | Insn::CheckInterrupts { .. }
+            | Insn::FixnumAdd { .. }
+            | Insn::FixnumSub { .. }
+            | Insn::FixnumMult { .. }
+            | Insn::FixnumLShift { .. }
+            | Insn::FixnumDiv { .. }
+            | Insn::FixnumMod { .. }
+            | Insn::BoxFixnum { .. }
+            | Insn::FloatAdd { .. }
+            | Insn::FloatSub { .. }
+            | Insn::FloatMul { .. }
+            | Insn::FloatDiv { .. }
+            | Insn::FloatToInt { .. }
+            | Insn::ObjectAllocClass { .. }
+            | Insn::NewArray { .. }
+            | Insn::NewRangeFixnum { .. }
+            | Insn::ArrayDup { .. }
+            | Insn::StringCopy { .. }
+            | Insn::HashDup { .. }
+            | Insn::FixnumToString { .. }
+            | Insn::PopInlineFrame { .. } => true,
+            // With a block, gen_block_handler_opnd hands the callee a captured-block pointer into
+            // the current cfp, and the inlined block later reads `captured->self` from that
+            // memory, which holds a placeholder when the receiver is virtual.
+            Insn::PushInlineFrame { block, .. } => block.is_none(),
+            _ => false,
         }
     }
 }
@@ -2267,6 +2326,10 @@ impl<'a> std::fmt::Display for InsnPrinter<'a> {
             &Insn::ObjectAllocClass { class, .. } => {
                 let class_name = get_class_name(class);
                 write!(f, "ObjectAllocClass {class_name}:{}", class.print(self.ptr_map))
+            }
+            &Insn::VirtualObject { class } => {
+                let class_name = get_class_name(class);
+                write!(f, "VirtualObject {class_name}:{}", class.print(self.ptr_map))
             }
             Insn::StringCopy { val, .. } => { write!(f, "StringCopy {val}") }
             Insn::StringConcat { strings, .. } => {
@@ -2815,6 +2878,15 @@ pub enum ValidationError {
     // block.
     IrreducibleLoopEdge(BlockId, BlockId),
     MiscValidationError(InsnId, String),
+    /// A non-Snapshot instruction (other than `PushInlineFrame::recv`) uses a VirtualObject:
+    /// the block, the offending instruction, and the VirtualObject
+    VirtualObjectEscapes(BlockId, InsnId, InsnId),
+    /// An instruction that may publish a lazily decoded stack map has a VirtualObject in the
+    /// frame state chain of its Snapshot: the block, the instruction, and the VirtualObject
+    VirtualObjectInPublishedFrameState(BlockId, InsnId, InsnId),
+    /// A Snapshot used by a non-Snapshot instruction reaches a VirtualObject but carries no
+    /// state for it: the block, the Snapshot, and the VirtualObject
+    VirtualObjectMissingState(BlockId, InsnId, InsnId),
 }
 
 /// Set of flags incompatible with direct sends to forwardable callees.
@@ -3578,6 +3650,25 @@ impl Function {
         }
     }
 
+    /// Whether `id` resolves to a scalar-replaced allocation.
+    pub fn is_virtual_object(&self, id: InsnId) -> bool {
+        matches!(self.find_ref(id), Insn::VirtualObject { .. })
+    }
+
+    /// Call `f` on the resolved stack entries, locals, and `self_val` of every frame in the
+    /// `caller` chain of `snapshot`, starting with `snapshot`'s own frame. These are the values a
+    /// side exit or stack map from `snapshot` writes back to the VM frames.
+    fn snapshot_chain_roots(&self, snapshot: InsnId, mut f: impl FnMut(InsnId)) {
+        let mut current = Some(snapshot);
+        while let Some(snapshot) = current {
+            let state = self.frame_state_ref(snapshot);
+            for &val in state.stack().chain(state.locals()).chain(state.self_val.iter()) {
+                f(self.find_id(val));
+            }
+            current = state.caller();
+        }
+    }
+
     /// Return a FrameState's iseq at the given instruction index.
     pub fn frame_state_iseq(&self, insn_id: InsnId) -> *const rb_iseq_t {
         self.frame_state_ref(insn_id).iseq
@@ -3924,7 +4015,7 @@ impl Function {
             Insn::NewRange { .. } => types::RangeExact,
             Insn::NewRangeFixnum { .. } => types::RangeExact,
             Insn::ObjectAlloc { .. } => types::HeapBasicObject,
-            Insn::ObjectAllocClass { class, .. } => Type::from_class(*class),
+            Insn::ObjectAllocClass { class, .. } | Insn::VirtualObject { class } => Type::from_class(*class),
             Insn::CCallWithFrame(insn) => insn.return_type,
             Insn::CCall { return_type, .. } => *return_type,
             Insn::CCallVariadic(insn) => insn.return_type,
@@ -7086,6 +7177,406 @@ impl Function {
         }
     }
 
+    /// Replace `T_OBJECT` allocations that never escape this function with [`Insn::VirtualObject`]s
+    /// whose instance variables live in SSA values ("scalar replacement"). Side exits rebuild the
+    /// real object from the field values recorded in each Snapshot's `virtual_objects`.
+    ///
+    /// The analysis is all-or-nothing rather than partial escape analysis: an allocation stays
+    /// real if any use lets it escape, if it is reachable from a frame state that may be published
+    /// while this JIT frame keeps running (see [`Insn::never_publishes_stack_map`]), or if its
+    /// field values disagree where control flow merges. The per-block object state walk follows
+    /// Stadler et al., "Partial Escape Analysis and Scalar Replacement for Java" (CGO 2014),
+    /// without materializing on escaping branches.
+    ///
+    /// Returns whether any allocation was replaced.
+    fn scalar_replace_allocations(&mut self) -> bool {
+        /// The shape that the allocation fast path gives a fresh instance of `class`, or `None` if
+        /// `class` can't use that path. This is the upper half of the header
+        /// `gc_fastpath_new_obj` writes.
+        fn scalar_replacement_initial_shape(class: VALUE) -> Option<ShapeId> {
+            if !unsafe { rb_zjit_class_has_default_allocator(class) } {
+                return None;
+            }
+            let mut alloc_size: usize = 0;
+            let mut flags = VALUE(0);
+            if !unsafe { rb_zjit_class_allocate_instance_fastpath(class, &mut alloc_size, &mut flags) } {
+                return None;
+            }
+            let header = unsafe { rb_zjit_new_obj_shape(flags, alloc_size) }.as_u64();
+            Some(ShapeId(u32::try_from(header >> RB_SHAPE_FLAG_SHIFT).unwrap()))
+        }
+
+        if get_option!(disable_scalar_replacement) || unsafe { rb_zjit_newobj_hook_enabled_p() } {
+            return false;
+        }
+
+        let cfi = ControlFlowInfo::new(self);
+        let rpo = cfi.reverse_post_order();
+
+        // Candidates: allocations whose class has the embedded-object fast path, with the shape
+        // that path gives a fresh object.
+        let mut candidates: HashMap<InsnId, ShapeId> = HashMap::new();
+        for &block in rpo {
+            for &insn_id in &self.blocks[block].insns {
+                let insn_id = self.find_id(insn_id);
+                if let Insn::ObjectAllocClass { class, .. } = self.insns[insn_id] {
+                    if let Some(shape) = scalar_replacement_initial_shape(class) {
+                        candidates.insert(insn_id, shape);
+                    }
+                }
+            }
+        }
+        if candidates.is_empty() {
+            return false;
+        }
+
+        // Phase 1: a flow-insensitive scan for uses that let a candidate escape. Operands are
+        // resolved, and a candidate matches only by its own id, so a Guard* or RefineType of a
+        // candidate is an ordinary (escaping) use.
+        let mut escaped: HashSet<InsnId> = HashSet::new();
+        for &block in rpo {
+            for &insn_id in &self.blocks[block].insns {
+                let insn = self.find(insn_id);
+                let is_candidate = |id: InsnId| candidates.contains_key(&id);
+                match insn {
+                    Insn::Snapshot { .. } => continue,
+                    Insn::StoreField { recv, id, val, .. } => {
+                        if is_candidate(val) {
+                            escaped.insert(val);
+                        }
+                        let modeled_store = match id {
+                            FieldName::Id(_) => true,
+                            FieldName::shape_id => matches!(self.find_ref(val), Insn::Const { val: Const::CShape(_) }),
+                            _ => false,
+                        };
+                        if is_candidate(recv) && !modeled_store {
+                            escaped.insert(recv);
+                        }
+                    }
+                    Insn::LoadField { recv, id, .. } => {
+                        if is_candidate(recv) && !matches!(id, FieldName::Id(_) | FieldName::shape_id) {
+                            escaped.insert(recv);
+                        }
+                    }
+                    Insn::WriteBarrier { val, .. } => {
+                        if is_candidate(val) {
+                            escaped.insert(val);
+                        }
+                    }
+                    // Phase 3 folds an identity comparison of two different allocations to a
+                    // constant, so it doesn't need the objects.
+                    Insn::IsBitEqual { left, right } | Insn::IsBitNotEqual { left, right }
+                        if left != right && is_candidate(left) && is_candidate(right) => {}
+                    Insn::PushInlineFrame { recv, .. } => {
+                        insn.for_each_operand(|operand| {
+                            if operand != recv && is_candidate(operand) {
+                                escaped.insert(operand);
+                            }
+                        });
+                    }
+                    _ => {
+                        insn.for_each_operand(|operand| {
+                            if is_candidate(operand) {
+                                escaped.insert(operand);
+                            }
+                        });
+                    }
+                }
+                // A stack map that may be decoded while this frame keeps running can't allocate
+                // the object, and a later side exit would allocate a second copy.
+                if !insn.never_publishes_stack_map() {
+                    insn.for_each_operand(|operand| {
+                        if matches!(self.insns[operand], Insn::Snapshot { .. }) {
+                            self.snapshot_chain_roots(operand, |root| {
+                                if is_candidate(root) {
+                                    escaped.insert(root);
+                                }
+                            });
+                        }
+                    });
+                }
+            }
+        }
+
+        // Phase 2: a forward walk that tracks each remaining candidate's fields and shape.
+        #[derive(Clone)]
+        struct ObjState { fields: Vec<VirtualField>, shape: ShapeId }
+        let same_fields = |a: &[VirtualField], b: &[VirtualField]| {
+            a.len() == b.len()
+                && a.iter().zip(b).all(|(a, b)| {
+                    a.id == b.id && a.offset == b.offset && self.find_id(a.val) == self.find_id(b.val)
+                })
+        };
+        let same_state = |a: &ObjState, b: &ObjState| a.shape == b.shape && same_fields(&a.fields, &b.fields);
+        let tracked = |id: InsnId| candidates.contains_key(&id) && !escaped.contains(&id);
+        let mut rejected: HashSet<InsnId> = HashSet::new();
+        // This maps each forwardable ivar load to its object and the value stored there.
+        let mut load_values: HashMap<InsnId, (InsnId, InsnId)> = HashMap::new();
+        // This maps each shape load to its object and the object's shape at that point.
+        let mut shape_loads: HashMap<InsnId, (InsnId, ShapeId)> = HashMap::new();
+        let mut snapshot_states: HashMap<InsnId, Vec<VirtualObjectState>> = HashMap::new();
+        let mut block_in: HashMap<BlockId, HashMap<InsnId, ObjState>> = HashMap::new();
+        let mut block_out: HashMap<BlockId, HashMap<InsnId, ObjState>> = HashMap::new();
+        let rpo_index: HashMap<BlockId, usize> = rpo.iter().enumerate().map(|(idx, &block)| (block, idx)).collect();
+
+        for (idx, &block) in rpo.iter().enumerate() {
+            // Merge the processed predecessors. The CFG is reducible, so only loop back edges
+            // come from unprocessed blocks; they're checked after the walk.
+            let mut state: HashMap<InsnId, ObjState> = HashMap::new();
+            let processed_preds: Vec<BlockId> = cfi.predecessors(block).iter().copied()
+                .filter(|pred| rpo_index[pred] < idx)
+                .collect();
+            if let Some((first, rest)) = processed_preds.split_first() {
+                for (&object, obj_state) in &block_out[first] {
+                    if rejected.contains(&object) {
+                        continue;
+                    }
+                    // An object missing from a predecessor doesn't dominate this block, so
+                    // nothing here can reference it.
+                    let others: Option<Vec<&ObjState>> = rest.iter().map(|pred| block_out[pred].get(&object)).collect();
+                    let Some(others) = others else { continue };
+                    if others.iter().all(|other| same_state(obj_state, other)) {
+                        state.insert(object, obj_state.clone());
+                    } else {
+                        rejected.insert(object);
+                    }
+                }
+            }
+            block_in.insert(block, state.clone());
+
+            for &insn_id in &self.blocks[block].insns {
+                let insn_id = self.find_id(insn_id);
+                if tracked(insn_id) {
+                    // This is the candidate allocation itself.
+                    state.insert(insn_id, ObjState { fields: vec![], shape: candidates[&insn_id] });
+                    continue;
+                }
+                // A Snapshot records field values at its own position, so each user that may side
+                // exit with it must see the same values. The inliner gives PushInlineFrame and
+                // PopInlineFrame the same caller Snapshot around the inlined body's stores, which
+                // is fine only because gen_pop_inline_frame reads nothing but the stack size.
+                let insn = self.find(insn_id);
+                if !matches!(insn, Insn::Snapshot { .. } | Insn::PopInlineFrame { .. }) {
+                    insn.for_each_operand(|operand| {
+                        let Some(entries) = snapshot_states.get(&operand) else { return };
+                        for entry in entries {
+                            let current = state.get(&entry.object);
+                            if !current.is_some_and(|obj| same_fields(&obj.fields, &entry.fields)) {
+                                rejected.insert(entry.object);
+                            }
+                        }
+                    });
+                }
+                match insn {
+                    Insn::StoreField { recv, id, offset, val, .. } if tracked(recv) && !rejected.contains(&recv) => {
+                        let Some(obj) = state.get_mut(&recv) else {
+                            rejected.insert(recv);
+                            continue;
+                        };
+                        match id {
+                            FieldName::Id(ivar) => {
+                                if let Some(field) = obj.fields.iter_mut().find(|field| field.offset == offset) {
+                                    if field.id == ivar {
+                                        field.val = val;
+                                    } else {
+                                        rejected.insert(recv);
+                                    }
+                                } else if obj.fields.iter().any(|field| field.id == ivar) {
+                                    rejected.insert(recv);
+                                } else {
+                                    obj.fields.push(VirtualField { id: ivar, offset, val });
+                                }
+                            }
+                            FieldName::shape_id => {
+                                let &Insn::Const { val: Const::CShape(shape) } = self.find_ref(val) else {
+                                    unreachable!("phase 1 only keeps objects with constant shape stores");
+                                };
+                                obj.shape = shape;
+                            }
+                            _ => unreachable!("phase 1 only keeps objects with ivar and shape stores"),
+                        }
+                    }
+                    Insn::LoadField { recv, id, offset, return_type, .. } if tracked(recv) && !rejected.contains(&recv) => {
+                        let Some(obj) = state.get(&recv) else {
+                            rejected.insert(recv);
+                            continue;
+                        };
+                        match id {
+                            FieldName::Id(ivar) => {
+                                match obj.fields.iter().find(|field| field.offset == offset) {
+                                    // Same guard as optimize_load_store: keep the load if the
+                                    // stored value's type doesn't fit the load's return type.
+                                    Some(field) if field.id == ivar && self.type_of(field.val).is_subtype(return_type) => {
+                                        load_values.insert(insn_id, (recv, field.val));
+                                    }
+                                    _ => {
+                                        rejected.insert(recv);
+                                    }
+                                }
+                            }
+                            FieldName::shape_id => {
+                                shape_loads.insert(insn_id, (recv, obj.shape));
+                            }
+                            _ => unreachable!("phase 1 only keeps objects with ivar and shape loads"),
+                        }
+                    }
+                    Insn::GuardBitEquals { val, expected: Const::CShape(expected), .. } => {
+                        // Folding a guard that always fails would turn it into an unconditional
+                        // exit that recompilation reproduces forever. Leaving the object real
+                        // keeps the guard dynamic.
+                        if let Some(&(object, shape)) = shape_loads.get(&val) {
+                            if shape != expected {
+                                rejected.insert(object);
+                            }
+                        }
+                    }
+                    Insn::Snapshot { .. } => {
+                        let mut objects: Vec<InsnId> = vec![];
+                        self.snapshot_chain_roots(insn_id, |root| {
+                            if tracked(root) && !objects.contains(&root) {
+                                objects.push(root);
+                            }
+                        });
+                        let mut entries = vec![];
+                        for object in objects {
+                            if rejected.contains(&object) {
+                                continue;
+                            }
+                            match state.get(&object) {
+                                Some(obj) => entries.push(VirtualObjectState { object, fields: obj.fields.clone() }),
+                                // Dominance should make this impossible.
+                                None => { rejected.insert(object); }
+                            }
+                        }
+                        if !entries.is_empty() {
+                            snapshot_states.insert(insn_id, entries);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            block_out.insert(block, state);
+        }
+
+        // Loop back edges: an object allocated before a loop must leave the loop body in the
+        // state it entered the loop header with.
+        for &header in rpo {
+            for pred in cfi.predecessors(header) {
+                if rpo_index[pred] < rpo_index[&header] {
+                    continue;
+                }
+                for (&object, obj_state) in &block_in[&header] {
+                    let agrees = block_out[pred].get(&object).is_some_and(|other| same_state(obj_state, other));
+                    if !agrees {
+                        rejected.insert(object);
+                    }
+                }
+            }
+        }
+
+        // Every Snapshot that reaches codegen through a non-Snapshot user must carry the state of
+        // each virtual object it reaches. A Snapshot outside every reachable block's instruction
+        // list got no state in the walk above.
+        let mut uncovered: Vec<InsnId> = vec![];
+        for &block in rpo {
+            for &insn_id in &self.blocks[block].insns {
+                let insn = self.find(insn_id);
+                if matches!(insn, Insn::Snapshot { .. }) {
+                    continue;
+                }
+                insn.for_each_operand(|operand| {
+                    if !matches!(self.insns[operand], Insn::Snapshot { .. }) {
+                        return;
+                    }
+                    let entries = snapshot_states.get(&operand).map(Vec::as_slice).unwrap_or(&[]);
+                    self.snapshot_chain_roots(operand, |root| {
+                        if tracked(root) && !entries.iter().any(|entry| entry.object == root) {
+                            uncovered.push(root);
+                        }
+                    });
+                });
+            }
+        }
+        rejected.extend(uncovered);
+
+        // Rejections never invalidate another object's results: an object stored into another
+        // object already escaped in phase 1, so objects are independent.
+        let accepted: HashSet<InsnId> = candidates.keys().copied()
+            .filter(|object| tracked(*object) && !rejected.contains(object))
+            .collect();
+        if accepted.is_empty() {
+            return false;
+        }
+
+        // Phase 3: rewrite.
+        for &block in rpo {
+            let old_insns = std::mem::take(&mut self.blocks[block].insns);
+            let mut new_insns = Vec::with_capacity(old_insns.len());
+            for insn_id in old_insns {
+                let insn_id = self.find_id(insn_id);
+                if accepted.contains(&insn_id) {
+                    let Insn::ObjectAllocClass { class, state } = self.insns[insn_id] else {
+                        unreachable!("candidates are ObjectAllocClass instructions");
+                    };
+                    // The inline allocation fast path makes the same assumption: an allocation
+                    // hook enabled later sends execution back to the interpreter here.
+                    new_insns.push(self.new_insn(Insn::PatchPoint { invariant: Invariant::NoNewObjHook, state }));
+                    let virtual_object = self.new_insn(Insn::VirtualObject { class });
+                    self.insn_types[virtual_object] = self.infer_type(virtual_object);
+                    new_insns.push(virtual_object);
+                    self.make_equal_to(insn_id, virtual_object);
+                    incr_counter!(scalar_replaced_alloc_count);
+                    continue;
+                }
+                match self.find(insn_id) {
+                    // The receiver resolves to the VirtualObject that replaced its allocation,
+                    // which dominates every store.
+                    Insn::StoreField { recv, .. } | Insn::WriteBarrier { recv, .. } if self.is_virtual_object(recv) => continue,
+                    // Phase 1 let identity comparisons of two different candidates through.
+                    // Both may be virtual now, and two allocations are never the same object.
+                    Insn::IsBitEqual { left, right } | Insn::IsBitNotEqual { left, right }
+                        if self.is_distinct_allocation(left, right) =>
+                    {
+                        let result = matches!(self.insns[insn_id], Insn::IsBitNotEqual { .. });
+                        let folded = self.new_insn(Insn::Const { val: Const::CBool(result) });
+                        self.insn_types[folded] = self.infer_type(folded);
+                        self.make_equal_to(insn_id, folded);
+                        new_insns.push(folded);
+                        continue;
+                    }
+                    Insn::LoadField { .. } => {
+                        if let Some(&(object, value)) = load_values.get(&insn_id) {
+                            if accepted.contains(&object) {
+                                self.make_equal_to(insn_id, value);
+                                continue;
+                            }
+                        }
+                        if let Some(&(object, shape)) = shape_loads.get(&insn_id) {
+                            if accepted.contains(&object) {
+                                let shape_const = self.new_insn(Insn::Const { val: Const::CShape(shape) });
+                                self.insn_types[shape_const] = self.infer_type(shape_const);
+                                self.make_equal_to(insn_id, shape_const);
+                                new_insns.push(shape_const);
+                                continue;
+                            }
+                        }
+                    }
+                    Insn::Snapshot { .. } => {
+                        if let Some(mut entries) = snapshot_states.remove(&insn_id) {
+                            entries.retain(|entry| accepted.contains(&entry.object));
+                            let Insn::Snapshot { state } = &mut self.insns[insn_id] else { unreachable!() };
+                            state.virtual_objects = entries;
+                        }
+                    }
+                    _ => {}
+                }
+                new_insns.push(insn_id);
+            }
+            self.blocks[block].insns = new_insns;
+        }
+        true
+    }
+
     /// Fold a binary operator on fixnums.
     fn fold_fixnum_bop(&mut self, insn_id: InsnId, left: InsnId, right: InsnId, f: impl FnOnce(Option<i64>, Option<i64>) -> Option<i64>) -> InsnId {
         f(self.type_of(left).fixnum_value(), self.type_of(right).fixnum_value())
@@ -7165,6 +7656,14 @@ impl Function {
             return true;
         }
         false
+    }
+
+    /// Whether `left` and `right` are two different allocation instructions. Each execution of an
+    /// allocation produces a fresh object, so values from two different allocations are never the
+    /// same object.
+    fn is_distinct_allocation(&self, left: InsnId, right: InsnId) -> bool {
+        let is_allocation = |id| matches!(self.find_ref(id), Insn::ObjectAllocClass { .. } | Insn::VirtualObject { .. });
+        self.find_id(left) != self.find_id(right) && is_allocation(left) && is_allocation(right)
     }
 
     /// Use type information left by `infer_types` to fold away operations that can be evaluated at compile-time.
@@ -8105,6 +8604,7 @@ impl Function {
             (remove_duplicate_check_interrupts) => { Counter::compile_hir_remove_duplicate_check_interrupts_time_ns };
             (eliminate_empty_inline_frames) => { Counter::compile_hir_eliminate_empty_inline_frames_time_ns };
             (eliminate_dead_code) => { Counter::compile_hir_eliminate_dead_code_time_ns };
+            (scalar_replace_allocations) => { Counter::compile_hir_scalar_replace_allocations_time_ns };
             ($name:ident) => { unimplemented!("Counter for pass {}", stringify!($name)) };
         }
 
@@ -8165,6 +8665,21 @@ impl Function {
             if !did_inline {
                 break;
             }
+        }
+
+        // Scalar replacement runs once, after inlining has converged, so no later pass creates
+        // Snapshots or lazily published frame states behind its back (validate_virtual_objects
+        // checks this after every pass in debug builds and once after optimization in release).
+        if run_pass!(scalar_replace_allocations) {
+            // Forwarded loads expose constants, dead guards, dead branches, and empty inlined frames.
+            run_pass!(canonicalize);
+            run_pass!(fold_constants);
+            run_pass!(clean_cfg);
+            run_pass!(remove_redundant_patch_points);
+            if has_ever_inlined {
+                run_pass!(eliminate_empty_inline_frames);
+            }
+            run_pass!(eliminate_dead_code);
         }
 
         if should_dump {
@@ -8429,7 +8944,8 @@ impl Function {
             | Insn::GetSpecialSymbol { .. }
             | Insn::GetBlockParam { .. }
             | Insn::SymToProc { .. }
-            | Insn::StoreField { .. } => {
+            | Insn::StoreField { .. }
+            | Insn::VirtualObject { .. } => {
                 Ok(())
             }
             // Instructions with 1 Ruby object operand
@@ -8784,6 +9300,66 @@ impl Function {
         Ok(())
     }
 
+    /// Check the invariants of scalar-replaced allocations: a VirtualObject is used only by
+    /// Snapshots and as a `PushInlineFrame` receiver, and every Snapshot that a non-Snapshot
+    /// instruction uses and that reaches a VirtualObject belongs to an instruction that only
+    /// side-exits with it and carries the object's field values for materialization.
+    pub fn validate_virtual_objects(&self) -> Result<(), ValidationError> {
+        // Release builds run this on every optimized function, so skip the Snapshot walks when
+        // scalar replacement didn't fire.
+        let rpo = self.reverse_post_order();
+        let has_virtual_object = rpo.iter().any(|&block_id| {
+            self.blocks[block_id].insns.iter().any(|&insn_id| matches!(self.find_ref(insn_id), Insn::VirtualObject { .. }))
+        });
+        if !has_virtual_object {
+            return Ok(());
+        }
+        for block_id in rpo {
+            for &insn_id in &self.blocks[block_id].insns {
+                let insn = self.find(insn_id);
+                if matches!(insn, Insn::Snapshot { .. }) {
+                    continue;
+                }
+                let allowed_recv = match insn {
+                    Insn::PushInlineFrame { recv, .. } => Some(recv),
+                    _ => None,
+                };
+                let mut result = Ok(());
+                insn.for_each_operand(|operand| {
+                    if result.is_err() {
+                        return;
+                    }
+                    match self.find_ref(operand) {
+                        Insn::VirtualObject { .. } if Some(operand) != allowed_recv => {
+                            result = Err(ValidationError::VirtualObjectEscapes(block_id, insn_id, operand));
+                        }
+                        Insn::Snapshot { state } => {
+                            let mut virtual_objects = vec![];
+                            self.snapshot_chain_roots(operand, |root| {
+                                if self.is_virtual_object(root) && !virtual_objects.contains(&root) {
+                                    virtual_objects.push(root);
+                                }
+                            });
+                            for object in virtual_objects {
+                                if !insn.never_publishes_stack_map() {
+                                    result = Err(ValidationError::VirtualObjectInPublishedFrameState(block_id, insn_id, object));
+                                    return;
+                                }
+                                if !state.virtual_objects().iter().any(|state| self.find_id(state.object) == object) {
+                                    result = Err(ValidationError::VirtualObjectMissingState(block_id, operand, object));
+                                    return;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                });
+                result?;
+            }
+        }
+        Ok(())
+    }
+
     /// Run all validation passes we have.
     pub fn validate(&self) -> Result<(), ValidationError> {
         self.validate_block_terminators_and_jumps()?;
@@ -8791,6 +9367,7 @@ impl Function {
         self.validate_definite_assignment()?;
         self.validate_insn_uniqueness()?;
         self.validate_types()?;
+        self.validate_virtual_objects()?;
         Ok(())
     }
 
@@ -9063,6 +9640,15 @@ fn spill_locals_for_block(
     }
 }
 
+/// One instance variable of a scalar-replaced object.
+#[derive(Debug, Clone)]
+pub struct VirtualField { pub id: ID, pub offset: i32, pub val: InsnId }
+
+/// Field values of one scalar-replaced object at the program point of the owning Snapshot.
+/// `fields` is in first-store order, which is the order materialization replays them in.
+#[derive(Debug, Clone)]
+pub struct VirtualObjectState { pub object: InsnId, pub fields: Vec<VirtualField> }
+
 #[derive(Debug, Clone)]
 pub struct FrameState {
     pub iseq: IseqPtr,
@@ -9092,6 +9678,17 @@ pub struct FrameState {
     /// `cfp->jit_return` values do not alias across the shared native stack frame.
     /// This value's upper bound is the `inline_max_iterations` value.
     pub depth: InlineDepth,
+
+    /// `self` of an inlined frame: the callee body's self block param, which the inliner aliases
+    /// to the receiver. `None` for depth-0 frames, whose `self` is always real and already in
+    /// `cfp->self`.
+    self_val: Option<InsnId>,
+
+    /// Field values of the scalar-replaced objects reachable from this Snapshot's frame chain at
+    /// this program point. Side exits use them to materialize the objects. The state lives on the
+    /// innermost Snapshot because an inlined callee can mutate an object that only the caller's
+    /// (older) Snapshot references.
+    virtual_objects: Vec<VirtualObjectState>,
 }
 
 impl FrameState {
@@ -9135,6 +9732,16 @@ impl FrameState {
                 *slot = new;
             }
         }
+        if self.self_val == Some(old) {
+            self.self_val = Some(new);
+        }
+        for object in &mut self.virtual_objects {
+            for field in &mut object.fields {
+                if field.val == old {
+                    field.val = new;
+                }
+            }
+        }
     }
 }
 
@@ -9146,7 +9753,7 @@ pub struct FrameStatePrinter<'a> {
 
 impl FrameState {
     fn new(iseq: IseqPtr) -> FrameState {
-        FrameState { iseq, pc: std::ptr::null::<VALUE>(), insn_idx: 0, stack: vec![], locals: vec![], caller: None, depth: 0, spilled_locals: LocalSet::with_capacity(0) }
+        FrameState { iseq, pc: std::ptr::null::<VALUE>(), insn_idx: 0, stack: vec![], locals: vec![], caller: None, depth: 0, spilled_locals: LocalSet::with_capacity(0), self_val: None, virtual_objects: vec![] }
     }
 
     /// Construct a `FrameState` for an inlined callee. `caller` is the `InsnId`
@@ -9167,6 +9774,16 @@ impl FrameState {
 
     pub fn caller(&self) -> Option<InsnId> {
         self.caller
+    }
+
+    /// `self` of an inlined frame; `None` for depth-0 frames.
+    pub fn self_val(&self) -> Option<InsnId> {
+        self.self_val
+    }
+
+    /// Field values of the scalar-replaced objects reachable from this Snapshot's frame chain.
+    pub fn virtual_objects(&self) -> &[VirtualObjectState] {
+        &self.virtual_objects
     }
 
     /// Iterate over all local variables
@@ -9262,6 +9879,23 @@ impl Display for FrameStatePrinter<'_> {
             write!(f, "{name}={local}")?;
         }
         write!(f, "]")?;
+        if let Some(self_val) = inner.self_val {
+            write!(f, ", self: {self_val}")?;
+        }
+        if !inner.virtual_objects.is_empty() {
+            write!(f, ", virtual: [")?;
+            for (idx, object) in inner.virtual_objects.iter().enumerate() {
+                if idx > 0 { write!(f, ", ")?; }
+                write!(f, "{} {{", object.object)?;
+                for (field_idx, field) in object.fields.iter().enumerate() {
+                    if field_idx > 0 { write!(f, ",")?; }
+                    write!(f, " {}: {}", FieldName::Id(field.id), field.val)?;
+                }
+                if !object.fields.is_empty() { write!(f, " ")?; }
+                write!(f, "}}")?;
+            }
+            write!(f, "]")?;
+        }
         if let Some(caller) = inner.caller {
             write!(f, ", caller: {caller}")?;
         }
@@ -9725,6 +10359,11 @@ fn add_iseq_to_hir(
         let mut self_param = fun.push_insn(block, Insn::Param);
         let mut state = {
             let mut result = new_frame_state(mode, iseq);
+            // Record the block param, not later refinements of `self_param`: it is the value
+            // the inliner aliases to the receiver, so side exits can rebuild `cfp->self` from it.
+            if matches!(mode, AddIseqMode::Inlined { .. }) {
+                result.self_val = Some(self_param);
+            }
             for _ in 0..num_incoming_locals {
                 result.locals.push(fun.push_insn(block, Insn::Param));
             }

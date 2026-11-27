@@ -126,6 +126,10 @@ unsafe extern "C" {
     pub fn rb_jit_iseq_mark_ep_escape_recorded(iseq: IseqPtr);
     pub fn rb_jit_iseq_ep_escape_recorded_p(iseq: IseqPtr) -> bool;
 
+    /// Whether a C-level NEWOBJ hook (e.g. ObjectSpace.trace_object_allocations) is active.
+    /// Allocations that bypass rb_newobj don't fire it.
+    pub fn rb_zjit_newobj_hook_enabled_p() -> bool;
+
     // Floats within range will be encoded without creating objects in the heap.
     // (Range is 0x3000000000000001 to 0x4fffffffffffffff (1.7272337110188893E-77 to 2.3158417847463237E+77).
     pub fn rb_float_new(d: f64) -> VALUE;

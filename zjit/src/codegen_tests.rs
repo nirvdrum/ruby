@@ -1278,6 +1278,165 @@ fn test_inline_block_writes_outer_locals() {
     });
 }
 
+const SCALAR_REPLACEMENT_POINT: &str = "
+    class Point
+      attr_accessor :x, :y
+      def initialize(x, y)
+        @x = x
+        @y = y
+      end
+      def sum(k) = k + @x + @y
+    end
+";
+
+/// Evaluate `program`, which must compile the method under test, and assert that compiling it
+/// scalar-replaced at least one allocation.
+#[track_caller]
+fn eval_scalar_replacing(program: &str) {
+    ensure_rubyvm(); // ZJITState is not available until the VM is booted
+    let counters = crate::state::ZJITState::get_counters();
+    let replaced_before = counters.scalar_replaced_alloc_count;
+    eval(SCALAR_REPLACEMENT_POINT);
+    eval(program);
+    assert!(counters.scalar_replaced_alloc_count > replaced_before,
+        "expected compiling the program to scalar-replace an allocation");
+}
+
+#[test]
+fn test_scalar_replace_no_exit() {
+    with_inlining(|| {
+        eval_scalar_replacing("
+            def test(a, b) = Point.new(a, b).sum(1)
+            test(1, 2)
+            test(1, 2)
+        ");
+        assert_snapshot!(assert_compiles("test(1, 2)"), @"4");
+    });
+}
+
+#[test]
+fn test_scalar_replace_exit_in_inlined_frame_with_virtual_receiver() {
+    with_inlining(|| {
+        eval_scalar_replacing("
+            def test(a, b, k) = Point.new(a, b).sum(k)
+            test(1, 2, 3)
+            test(1, 2, 3)
+        ");
+        // The Fixnum guard on `k` fails inside the inlined `sum`. The interpreter then reads
+        // @x and @y from the materialized `self`.
+        assert_snapshot!(assert_compiles_allowing_exits("test(1, 2, 3.5)"), @"6.5");
+    });
+}
+
+#[test]
+fn test_scalar_replace_exit_with_object_in_local() {
+    with_inlining(|| {
+        eval_scalar_replacing("
+            def test(a, b, k)
+              p = Point.new(a, b)
+              z = k + 1
+              p.x + p.y + z
+            end
+            test(1, 2, 3)
+            test(1, 2, 3)
+        ");
+        assert_snapshot!(assert_compiles_allowing_exits("test(1, 2, 3.5)"), @"7.5");
+    });
+}
+
+#[test]
+fn test_scalar_replace_exit_preserves_identity() {
+    with_inlining(|| {
+        eval_scalar_replacing("
+            def test(a, b, k)
+              p = Point.new(a, b)
+              q = p
+              z = k + 1
+              [p.equal?(q), z]
+            end
+            test(1, 2, 3)
+            test(1, 2, 3)
+        ");
+        // Both locals must materialize to the same object.
+        assert_snapshot!(assert_compiles_allowing_exits("test(1, 2, 3.5)"), @"[true, 4.5]");
+    });
+}
+
+#[test]
+fn test_scalar_replace_exit_after_overwriting_field() {
+    with_inlining(|| {
+        eval_scalar_replacing("
+            def test(a, b, k)
+              p = Point.new(a, b)
+              p.x = b
+              z = k + 1
+              [p.x, p.y, z]
+            end
+            test(1, 2, 3)
+            test(1, 2, 3)
+        ");
+        assert_snapshot!(assert_compiles_allowing_exits("test(1, 2, 3.5)"), @"[2, 2, 4.5]");
+    });
+}
+
+#[test]
+fn test_scalar_replace_exit_with_heap_fields_under_gc_stress() {
+    with_inlining(|| {
+        eval_scalar_replacing(r#"
+            def test(s, k)
+              p = Point.new(s + "b", [k])
+              z = k + 1
+              [p.x, p.y, z]
+            end
+            test("a", 3)
+            test("a", 3)
+        "#);
+        assert_snapshot!(assert_compiles_allowing_exits(r#"GC.stress = true; r = test("a", 3.5); GC.stress = false; r"#), @r#"["ab", [3.5], 4.5]"#);
+    });
+}
+
+#[test]
+fn test_scalar_replace_block_reading_receiver() {
+    // Must hold whether or not the object ends up virtual.
+    with_inlining(|| {
+        eval("
+            class Acc
+              def initialize(a) = @a = a
+              def run(arr) = arr.each { |x| @a += x }
+              def a = @a
+            end
+            def test(arr) = (o = Acc.new(10); o.run(arr); o.a)
+            test([1, 2])
+            test([1, 2])
+        ");
+        assert_snapshot!(assert_compiles_allowing_exits("test([1, 2])"), @"13");
+    });
+}
+
+#[test]
+fn test_scalar_replace_exit_with_two_virtual_objects() {
+    with_inlining(|| {
+        // The caller outgrows the default inline budget before both `initialize` calls get
+        // inlined, and an object passed to a non-inlined `initialize` escapes.
+        let old_budget = get_option!(inline_budget);
+        unsafe { crate::options::OPTIONS.as_mut().unwrap().inline_budget = crate::options::INLINE_BUDGET_UNLIMITED; }
+        eval_scalar_replacing("
+            def test(a, b, k)
+              p = Point.new(a, b)
+              q = Point.new(b, a)
+              z = k + 1
+              [p.x, q.x, p.equal?(q), z]
+            end
+            test(1, 2, 3)
+            test(1, 2, 3)
+        ");
+        unsafe { crate::options::OPTIONS.as_mut().unwrap().inline_budget = old_budget; }
+        // `p.equal?(q)` folds to false because they come from different allocations, so the
+        // comparison doesn't make them escape.
+        assert_snapshot!(assert_compiles_allowing_exits("test(1, 2, 3.5)"), @"[1, 2, false, 4.5]");
+    });
+}
+
 #[test]
 fn test_inline_block_side_exit_materializes_block_frame() {
     with_inlining(|| {

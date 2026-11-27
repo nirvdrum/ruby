@@ -3051,6 +3051,26 @@ zjit_check_owned_slot(const rb_control_frame_t *cfp, const zjit_jit_frame_t *jit
 #define zjit_check_owned_slot(cfp, jit_frame, slot, i) ((void)0)
 #endif
 
+// Read one value-producing opcode (VREG, IMM, or NIL) and return the VALUE it denotes.
+static VALUE
+zjit_stack_map_read_value(zjit_stack_map_reader_t *reader, const rb_control_frame_t *cfp)
+{
+    unsigned int op = zjit_stack_map_read_bits(reader, ZJIT_STACK_MAP_OP_BITS);
+    switch (op) {
+      case ZJIT_STACK_MAP_OP_VREG:
+        return ((VALUE *)cfp->jit_return)[-zjit_stack_map_read_varint(reader)];
+      case ZJIT_STACK_MAP_OP_IMM: {
+        VALUE value = (VALUE)zjit_stack_map_read_varint(reader);
+        RUBY_ASSERT(RB_SPECIAL_CONST_P(value)); // We don't GC mark stack map entries.
+        return value;
+      }
+      case ZJIT_STACK_MAP_OP_NIL:
+        return Qnil;
+      default:
+        rb_bug("ZJIT stackmap opcode %u does not produce a value", op);
+    }
+}
+
 // Write a ZJIT frame's off-stack Ruby slots (operands and locals) into VM-stack
 // memory using its stack map, decoding downward from cfp->sp. Does not touch
 // any frame metadata (pc/_iseq/block_code/jit_return).
@@ -3061,7 +3081,7 @@ zjit_frame_write_stack(const rb_execution_context_t *ec, rb_control_frame_t *cfp
     if (jit_frame->stack_map) {
         // One map can describe several control frames and we care about the
         // VM_ENV_ESCAPED_P each.
-        const rb_control_frame_t *env_cfp = cfp;
+        rb_control_frame_t *env_cfp = cfp;
         bool env_escaped = VM_ENV_ESCAPED_P(env_cfp->ep);
         // Whether the cursor is in a frame's locals area, i.e. past the frame's
         // SKIP_VM_ENV_DATA opcode and before the next PREV_FRAME opcode. Locals are
@@ -3127,6 +3147,38 @@ zjit_frame_write_stack(const rb_execution_context_t *ec, rb_control_frame_t *cfp
                 locals_area = false;
                 env_cfp = RUBY_VM_PREVIOUS_CONTROL_FRAME(env_cfp);
                 env_escaped = VM_ENV_ESCAPED_P(env_cfp->ep);
+                break;
+              case ZJIT_STACK_MAP_OP_NEW_OBJECT: {
+                // Allocate a scalar-replaced object. Its ivars are set by SET_IVAR opcodes, and
+                // VREG opcodes that name its slot write it to the VM stack.
+                int64_t dst = zjit_stack_map_read_varint(&reader);
+                int64_t klass_slot = zjit_stack_map_read_varint(&reader);
+                VALUE *slots = (VALUE *)cfp->jit_return;
+                // The side exit zeroes the slot before installing this map. If allocation or
+                // rb_ivar_set raises (e.g. NoMemoryError), cfp->jit_return is still set, so
+                // rb_ec_tag_jump decodes this map again to give the frame complete locals for
+                // any rescue. Reusing an object allocated by the earlier pass keeps one object
+                // per virtual object, and replaying SET_IVAR on it is idempotent.
+                if (slots[-dst] == 0) {
+                    // The native slot keeps the object alive and pinned: the JIT's machine stack
+                    // is scanned conservatively.
+                    slots[-dst] = rb_class_allocate_instance(slots[-klass_slot]);
+                }
+                break;
+              }
+              case ZJIT_STACK_MAP_OP_SET_IVAR: {
+                // Replaying the stores by name gives the object a valid shape even if the class's
+                // ivar layout changed since compile time.
+                int64_t obj_slot = zjit_stack_map_read_varint(&reader);
+                ID id = (ID)zjit_stack_map_read_varint(&reader);
+                VALUE val = zjit_stack_map_read_value(&reader, cfp);
+                rb_ivar_set(((VALUE *)cfp->jit_return)[-obj_slot], id, val);
+                break;
+              }
+              case ZJIT_STACK_MAP_OP_SELF:
+                // The receiver of an inlined frame was scalar-replaced, so cfp->self holds a
+                // placeholder until now.
+                env_cfp->self = ((VALUE *)cfp->jit_return)[-zjit_stack_map_read_varint(&reader)];
                 break;
               default:
                 rb_bug("unknown ZJIT stackmap opcode: %u", op);

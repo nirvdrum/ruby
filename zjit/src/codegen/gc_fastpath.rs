@@ -3,7 +3,7 @@ use crate::cruby::{
     RB_GC_ZJIT_FASTPATH_DEFAULT, RB_GC_ZJIT_FASTPATH_MMTK,
     RUBY_OFFSET_EC_THREAD_PTR, RUBY_OFFSET_RBASIC_FLAGS, RUBY_OFFSET_RBASIC_KLASS,
     RUBY_OFFSET_THREAD_RACTOR, VALUE, VALUE_BITS, rb_zjit_new_obj_shape,
-    rb_zjit_runtime_offsets,
+    rb_zjit_newobj_hook_enabled_p, rb_zjit_runtime_offsets,
     rb_gc_zjit_default_new_obj_fastpath as RbGcZjitDefaultNewObjFastpath,
     rb_gc_zjit_mmtk_new_obj_fastpath as RbGcZjitMmtkNewObjFastpath,
 };
@@ -39,8 +39,6 @@ unsafe extern "C" {
         klass: VALUE,
         fastpath: *mut RbGcZjitFastpath,
     ) -> bool;
-
-    fn rb_zjit_newobj_hook_enabled_p() -> bool;
 }
 
 enum PreparedNewObjFastpath {

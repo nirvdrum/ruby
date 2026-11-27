@@ -183,6 +183,7 @@ make_counters! {
         compile_hir_remove_duplicate_check_interrupts_time_ns,
         compile_hir_eliminate_empty_inline_frames_time_ns,
         compile_hir_eliminate_dead_code_time_ns,
+        compile_hir_scalar_replace_allocations_time_ns,
         compile_lir_time_ns,
     }
 
@@ -371,6 +372,7 @@ make_counters! {
     compile_error_validation_type_check_failure,
     compile_error_validation_misc_validation_error,
     compile_error_validation_cfg_not_reducible,
+    compile_error_validation_virtual_object,
 
     // unhandled_hir_insn_: Unhandled HIR instructions
     unhandled_hir_insn_invokebuiltin,
@@ -475,6 +477,7 @@ make_counters! {
     inline_method_count,
     inline_block_count,
     empty_inline_frame_count,
+    scalar_replaced_alloc_count,
     inline_reject_too_large,
     inline_reject_complex_params,
     inline_reject_ep_escapes,
@@ -562,6 +565,9 @@ pub fn exit_counter_for_compile_error(compile_error: &CompileError) -> Counter {
                 MismatchedOperandType(..)     => compile_error_validation_type_check_failure,
                 IrreducibleLoopEdge(..)       => compile_error_validation_cfg_not_reducible,
                 MiscValidationError(..)       => compile_error_validation_misc_validation_error,
+                VirtualObjectEscapes(..)
+                | VirtualObjectInPublishedFrameState(..)
+                | VirtualObjectMissingState(..) => compile_error_validation_virtual_object,
             },
         }
     }

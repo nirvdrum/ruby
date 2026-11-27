@@ -2,8 +2,8 @@ use std::alloc::{handle_alloc_error, Layout};
 use std::ptr;
 
 use crate::cast::IntoU64;
-use crate::cruby::{IseqPtr, VALUE, Qnil, rb_gc_mark_movable, rb_gc_location};
-use crate::cruby::{ZJIT_STACK_MAP_OP_BITS, ZJIT_STACK_MAP_VARINT_BITS, ZJIT_STACK_MAP_OP_END, ZJIT_STACK_MAP_OP_VREG, ZJIT_STACK_MAP_OP_SKIP, ZJIT_STACK_MAP_OP_BASE_PTR, ZJIT_STACK_MAP_OP_IMM, ZJIT_STACK_MAP_OP_NIL, ZJIT_STACK_MAP_OP_SKIP_VM_ENV_DATA, ZJIT_STACK_MAP_OP_PREV_FRAME};
+use crate::cruby::{IseqPtr, VALUE, ID, Qnil, rb_gc_mark_movable, rb_gc_location};
+use crate::cruby::{ZJIT_STACK_MAP_OP_BITS, ZJIT_STACK_MAP_VARINT_BITS, ZJIT_STACK_MAP_OP_END, ZJIT_STACK_MAP_OP_VREG, ZJIT_STACK_MAP_OP_SKIP, ZJIT_STACK_MAP_OP_BASE_PTR, ZJIT_STACK_MAP_OP_IMM, ZJIT_STACK_MAP_OP_NIL, ZJIT_STACK_MAP_OP_SKIP_VM_ENV_DATA, ZJIT_STACK_MAP_OP_PREV_FRAME, ZJIT_STACK_MAP_OP_NEW_OBJECT, ZJIT_STACK_MAP_OP_SET_IVAR, ZJIT_STACK_MAP_OP_SELF};
 use crate::cruby::zjit_jit_frame;
 use crate::codegen::iseq_may_write_block_code;
 use crate::options::get_option;
@@ -121,9 +121,42 @@ fn test_bit_stream_example() {
     writer.skip(17); // two varint chunks
     // Fields are packed LSB first, so the literal reads right to left from bit 0. In each varint
     // chunk the continuation bit sits above the 4 payload bits, so 17 is lo=1_0001 then hi=0_0001.
-    //                  END 17(hi) 17(lo) SKIP 5      VREG materialize_block_code
-    let stream: u32 = 0b000_0_0001_1_0001_010__0_0101_001__1;
+    //                  END  17(hi) 17(lo) SKIP  5      VREG materialize_block_code
+    let stream: u32 = 0b0000_0_0001_1_0001_0010__0_0101_0001__1;
     assert_eq!(writer.finish(), stream.to_le_bytes());
+}
+
+#[cfg(test)]
+#[test]
+fn test_bit_stream_materialization_opcodes() {
+    let mut writer = StackMapWriter::new(false);
+    writer.new_object(3, 2);
+    writer.set_ivar(3, ID(1));
+    writer.imm(crate::cruby::Qtrue);
+    writer.set_ivar(3, ID(2));
+    writer.vreg(4);
+    writer.self_value(3);
+
+    // (value, width) fields in stream order. Opcodes are 4 bits and varint chunks are 4 payload
+    // bits under a continuation bit. Qtrue is 0x14, so it takes two chunks: lo=1_0100, hi=0_0001.
+    let fields: [(u64, u32); 17] = [
+        (0, 1),                           // materialize_block_code
+        (8, 4), (3, 5), (2, 5),           // NEW_OBJECT dst=3 class=2
+        (9, 4), (3, 5), (1, 5),           // SET_IVAR obj=3 id=1
+        (4, 4), (0b1_0100, 5), (0b0_0001, 5), // IMM Qtrue
+        (9, 4), (3, 5), (2, 5),           // SET_IVAR obj=3 id=2
+        (1, 4), (4, 5),                   // VREG 4
+        (10, 4), (3, 5),                  // SELF 3
+    ];
+    let mut stream = 0u128;
+    let mut num_bits = 0;
+    for (value, width) in fields {
+        stream |= u128::from(value) << num_bits;
+        num_bits += width;
+    }
+    num_bits += 4; // END is all zeros
+    let num_bytes = usize::try_from(num_bits.div_ceil(8)).unwrap();
+    assert_eq!(writer.finish(), stream.to_le_bytes()[..num_bytes]);
 }
 
 impl StackMapWriter {
@@ -215,6 +248,32 @@ impl StackMapWriter {
     pub fn prev_frame(&mut self, receiver: bool) {
         self.write_op(ZJIT_STACK_MAP_OP_PREV_FRAME);
         self.write_bits(receiver.into(), 1);
+    }
+
+    /// ZJIT_STACK_MAP_OP_NEW_OBJECT. Operands: destination slot index, class slot index. Allocates
+    /// an instance of the class in `jit_return[-class_slot_index]` into `jit_return[-dst_slot_index]`
+    /// without moving the cursor. The destination slot must start out zero; a nonzero slot holds
+    /// an object from an earlier, interrupted decode of the same map, which is reused.
+    pub fn new_object(&mut self, dst_slot_index: usize, class_slot_index: usize) {
+        self.write_op(ZJIT_STACK_MAP_OP_NEW_OBJECT);
+        self.write_varint(dst_slot_index.as_u64());
+        self.write_varint(class_slot_index.as_u64());
+    }
+
+    /// ZJIT_STACK_MAP_OP_SET_IVAR. Operands: object slot index, ivar ID, then exactly one value
+    /// opcode, which the caller writes with a following [`Self::vreg`] or [`Self::imm`] call.
+    /// Sets the ivar on `jit_return[-object_slot_index]` without moving the cursor.
+    pub fn set_ivar(&mut self, object_slot_index: usize, id: ID) {
+        self.write_op(ZJIT_STACK_MAP_OP_SET_IVAR);
+        self.write_varint(object_slot_index.as_u64());
+        self.write_varint(id.0);
+    }
+
+    /// ZJIT_STACK_MAP_OP_SELF. Operand: slot index. Writes `jit_return[-slot_index]` to `self` of
+    /// the control frame currently being decoded without moving the cursor.
+    pub fn self_value(&mut self, slot_index: usize) {
+        self.write_op(ZJIT_STACK_MAP_OP_SELF);
+        self.write_varint(slot_index.as_u64());
     }
 
     /// Terminate the stream with ZJIT_STACK_MAP_OP_END and return its bytes.
@@ -352,9 +411,9 @@ mod tests {
         // chunk is 4 payload bits followed by a continuation bit, so 17 is chunks
         // lo=1 and hi=1, and -1 is 15 chunks of 1111 with cont=1, then 1111 with cont=0.
         assert_eq!(writer.finish(), vec![
-            0b0101_001_1,   // 5 payload=0101 | VREG=001       | flag=1
-            0b1111_100_0,   // -1 chunk 0     | IMM=100        | 5 cont=0
-            0b11111111,     // -1 chunk 0 cont through chunk 15 payload[0], all ones
+            0b101_0001_1,   // 5 payload[2:0]=101 | VREG=0001  | flag=1
+            0b11_0100_0_0,  // -1 chunk 0 payload[1:0]=11 | IMM=0100 | 5 cont=0 | 5 payload[3]=0
+            0b11111111,     // -1 chunk 0 payload[3:2] through chunk 15 payload[3:0], all ones
             0b11111111,
             0b11111111,
             0b11111111,
@@ -363,9 +422,9 @@ mod tests {
             0b11111111,
             0b11111111,
             0b11111111,
-            0b1_010_0_111,  // 17 lo[0]=1     | SKIP=010       | -1 chunk 15 cont=0 | -1 chunk 15 payload[3:1]=111
-            0b0001_1_000,   // 17 hi=0001     | 17 lo cont=1   | 17 lo[3:1]=000
-            0b0000_000_0,   // padding=0000   | END=000        | 17 hi cont=0
+            0b10_0_11111,   // SKIP[1:0]=10   | -1 chunk 15 cont=0 | -1 chunk 15 payload, all ones
+            0b1_1_000_1_00, // 17 hi[0]=1     | 17 lo cont=1 | 17 lo[3:1]=000 | 17 lo[0]=1 | SKIP[3:2]=00
+            0b0000_0_000,   // END=0000       | 17 hi cont=0 | 17 hi[3:1]=000
         ]);
     }
 

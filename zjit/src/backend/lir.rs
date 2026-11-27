@@ -6,12 +6,12 @@ use std::mem::take;
 use std::rc::Rc;
 use crate::bitset::BitSet;
 use crate::perf;
-use crate::cruby::{IseqPtr, RUBY_OFFSET_CFP_SP, SIZEOF_VALUE_I32, VALUE, vm_stack_canary, zjit_jit_frame};
+use crate::cruby::{ID, IseqPtr, RUBY_OFFSET_CFP_SP, SIZEOF_VALUE_I32, VALUE, vm_stack_canary, zjit_jit_frame};
 use crate::hir::{Invariant, SideExitReason};
 use crate::hir;
 use crate::options::{TraceExits, get_option};
 use crate::payload::IseqVersionRef;
-use crate::jit_frame::PendingJITFrame;
+use crate::jit_frame::{PendingJITFrame, StackMapWriter};
 use crate::stats::{exit_counter_ptr, exit_counter_ptr_for_opcode, side_exit_counter, CompileError};
 use crate::virtualmem::CodePtr;
 use crate::asm::{CodeBlock, Label, LabelName};
@@ -1002,8 +1002,9 @@ macro_rules! target_for_each_operand_impl {
             Target::SideExit(data) => {
                 let SideExitStackMap { stack, .. } = $reborrow!(data.exit.stack_map);
                 for entry in stack {
-                    if let StackMapEntry::Opnd(opnd) = entry {
-                        visit_one!(opnd);
+                    match entry {
+                        StackMapEntry::Opnd(opnd) | StackMapEntry::SetIvar { val: opnd, .. } => visit_one!(opnd),
+                        _ => {}
                     }
                 }
             }
@@ -1822,6 +1823,15 @@ pub enum StackMapEntry {
     /// cursor past the callee's receiver slot if `receiver`, and resets the cursor
     /// to be not in the locals area. An inlined block has no receiver slot.
     PrevFrame { receiver: bool },
+    /// Allocate an instance of `class` when the frame is materialized; it becomes virtual object
+    /// `index`. Only side-exit stack maps carry this and the three entries below.
+    NewObject { index: u32, class: VALUE },
+    /// Set instance variable `id` of virtual object `index` to `val`.
+    SetIvar { index: u32, id: ID, val: Opnd },
+    /// A VM stack slot or local that holds virtual object `index`.
+    VirtualRef { index: u32 },
+    /// Write virtual object `index` to `self` of the control frame currently being decoded.
+    SelfRef { index: u32 },
 }
 
 /// Initial capacity for asm.insns vector
@@ -2875,18 +2885,24 @@ impl Assembler
         let Target::SideExit(data) = target else {
             return 0;
         };
-        data.exit.stack_map.stack.iter().filter(|entry| match entry {
-            StackMapEntry::Opnd(Opnd::Value(value)) => !value.special_const_p(),
-            StackMapEntry::Opnd(Opnd::UImm(value)) => !VALUE(*value as usize).special_const_p(),
-            StackMapEntry::Opnd(Opnd::VReg { idx, .. }) => {
+        let needs_capture_slot = |opnd: &Opnd| match opnd {
+            Opnd::Value(value) => !value.special_const_p(),
+            Opnd::UImm(value) => !VALUE(*value as usize).special_const_p(),
+            Opnd::VReg { idx, .. } => {
                 matches!(
                     intervals[*idx].assigned.get().expect("StackMap VReg should have an allocation"),
                     Allocation::Reg(_)
                 )
             }
-            StackMapEntry::Opnd(Opnd::Reg(_)) => true,
+            Opnd::Reg(_) => true,
             _ => false,
-        }).count()
+        };
+        data.exit.stack_map.stack.iter().map(|entry| match entry {
+            StackMapEntry::Opnd(opnd) | StackMapEntry::SetIvar { val: opnd, .. } => usize::from(needs_capture_slot(opnd)),
+            // One slot for the class, one for the allocated object.
+            StackMapEntry::NewObject { .. } => 2,
+            _ => 0,
+        }).sum()
     }
 
     /// Walk every instruction and replace VReg operands with the physical
@@ -3012,40 +3028,65 @@ impl Assembler
             asm.stack_state.stack_map_index_for_spill(stack_idx, frame_depth)
         }
 
+        /// Write one post-regalloc value operand as a single value opcode.
+        fn write_stack_map_value(asm: &mut Assembler, writer: &mut StackMapWriter, opnd: Opnd, capture_idx: &mut usize, frame_depth: usize) {
+            match opnd {
+                Opnd::Value(_) | Opnd::UImm(_) => {
+                    match immediate_stack_map_value(opnd) {
+                        Some(value) => writer.imm(value),
+                        None => writer.vreg(capture_stack_map_opnd(asm, opnd, capture_idx, frame_depth)),
+                    }
+                }
+                Opnd::Mem(Mem { base: MemBase::Stack { stack_idx, .. }, disp, .. }) => {
+                    assert_eq!(disp, 0, "StackMap stack slot should not have a displacement");
+                    writer.vreg(asm.stack_state.stack_map_index_for_spill(stack_idx.to_usize(), frame_depth));
+                }
+                Opnd::Reg(_) => writer.vreg(capture_stack_map_opnd(asm, opnd, capture_idx, frame_depth)),
+                _ => unreachable!("unexpected value operand in SideExit StackMap: {opnd:?}"),
+            }
+        }
+
         fn compile_exit_stack_map(asm: &mut Assembler, stack_map: &SideExitStackMap) {
             let SideExitStackMap { stack, frame_depth, jit_frame } = stack_map;
+            let frame_depth = *frame_depth;
             let mut writer = jit_frame.stack_map_writer();
 
             let mut capture_idx = 0;
+            // Stack map index of the native slot holding each virtual object once it's allocated.
+            let mut object_slots: Vec<usize> = vec![];
             for stack_entry in stack.iter() {
                 match *stack_entry {
-                    StackMapEntry::Opnd(opnd @ (Opnd::Value(_) | Opnd::UImm(_))) => {
-                        match immediate_stack_map_value(opnd) {
-                            Some(value) => writer.imm(value),
-                            None => writer.vreg(capture_stack_map_opnd(asm, opnd, &mut capture_idx, *frame_depth)),
-                        }
-                    }
+                    StackMapEntry::Opnd(opnd) => write_stack_map_value(asm, &mut writer, opnd, &mut capture_idx, frame_depth),
                     StackMapEntry::Skip(size) => writer.skip(size),
                     StackMapEntry::BasePtr { .. } => {
                         unreachable!("no BasePtr stackmap code in side-exit for now");
                     }
                     StackMapEntry::SkipVmEnvData => writer.skip_vm_env_data(),
                     StackMapEntry::PrevFrame { receiver } => writer.prev_frame(receiver),
-                    StackMapEntry::Opnd(Opnd::Mem(Mem { base: MemBase::Stack { stack_idx, .. }, disp, .. })) => {
-                        assert_eq!(disp, 0, "StackMap stack slot should not have a displacement");
-                        writer.vreg(asm.stack_state.stack_map_index_for_spill(stack_idx.to_usize(), *frame_depth));
+                    StackMapEntry::NewObject { index, class } => {
+                        assert_eq!(index.to_usize(), object_slots.len(), "virtual objects must be allocated in index order");
+                        // Capturing the class through Opnd::Value records a GC offset for it, since
+                        // stack maps themselves are never marked.
+                        let class_slot = capture_stack_map_opnd(asm, Opnd::Value(class), &mut capture_idx, frame_depth);
+                        // A zero destination tells NEW_OBJECT that the object isn't allocated yet,
+                        // so decoding the map again after a raise reuses the first allocation.
+                        let dst = capture_stack_map_opnd(asm, Opnd::UImm(0), &mut capture_idx, frame_depth);
+                        writer.new_object(dst, class_slot);
+                        object_slots.push(dst);
                     }
-                    StackMapEntry::Opnd(opnd @ Opnd::Reg(_)) => {
-                        writer.vreg(capture_stack_map_opnd(asm, opnd, &mut capture_idx, *frame_depth));
+                    StackMapEntry::SetIvar { index, id, val } => {
+                        writer.set_ivar(object_slots[index.to_usize()], id);
+                        write_stack_map_value(asm, &mut writer, val, &mut capture_idx, frame_depth);
                     }
-                    StackMapEntry::Opnd(_) => unreachable!("unexpected entry in SideExit StackMap: {stack_entry:?}"),
+                    StackMapEntry::VirtualRef { index } => writer.vreg(object_slots[index.to_usize()]),
+                    StackMapEntry::SelfRef { index } => writer.self_value(object_slots[index.to_usize()]),
                 }
             }
             let jit_frame = jit_frame.alloc(writer);
 
             assert!(capture_idx <= asm.stack_state.num_side_exit_stack_map_slots);
             asm_comment!(asm, "install side-exit JITFrame for caller depth {}", frame_depth);
-            let jit_frame_slot = Opnd::mem(64, NATIVE_BASE_PTR, -((*frame_depth as i32 + 1) * SIZEOF_VALUE_I32));
+            let jit_frame_slot = Opnd::mem(64, NATIVE_BASE_PTR, -((frame_depth as i32 + 1) * SIZEOF_VALUE_I32));
             asm.store(jit_frame_slot, Opnd::const_ptr(jit_frame));
         }
 

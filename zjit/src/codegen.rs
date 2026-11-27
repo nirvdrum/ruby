@@ -696,6 +696,9 @@ fn gen_insn(cb: &mut CodeBlock, jit: &mut JITState, asm: &mut Assembler, functio
         Insn::ArrayLength { array } => gen_array_length(asm, opnd!(array)),
         Insn::ObjectAlloc { val, state } => gen_object_alloc(jit, asm, function, opnd!(val), &function.frame_state(*state)),
         &Insn::ObjectAllocClass { class, state } => gen_object_alloc_class(jit, asm, function, class, &function.frame_state(state)),
+        // A scalar-replaced allocation has no runtime representation. It gets no operand, so a
+        // stray use outside a side exit stack map panics in `jit.get_opnd`.
+        Insn::VirtualObject { .. } => return Ok(()),
         Insn::StringCopy { val, chilled, state } => gen_string_copy(jit, asm, function, *val, opnd!(val), *chilled, &function.frame_state(*state)),
         Insn::StringConcat { strings, state } => gen_string_concat(jit, asm, function, opnds!(strings), &function.frame_state(*state)),
         Insn::StringCoderange { string, cached } => gen_string_coderange(jit, asm, opnd!(string), opnd!(cached)),
@@ -725,7 +728,10 @@ fn gen_insn(cb: &mut CodeBlock, jit: &mut JITState, asm: &mut Assembler, functio
             )
         }
         Insn::PushInlineFrame { cme, iseq, recv, num_args, block, state, exit_state, captured } => {
-            no_output!(gen_push_inline_frame(jit, asm, function, *cme, *iseq, opnd!(recv), *num_args, &function.frame_state(*state), &function.frame_state(*exit_state), block.map(|bh| lower_block_handler(jit, bh)), captured.map(|c| jit.get_opnd(c))))
+            // A virtual receiver has no runtime value; the side exits inside the inlined frame
+            // write the materialized object to cfp->self (see StackMapEntry::SelfRef).
+            let recv = if function.is_virtual_object(*recv) { Opnd::Value(Qnil) } else { opnd!(recv) };
+            no_output!(gen_push_inline_frame(jit, asm, function, *cme, *iseq, recv, *num_args, &function.frame_state(*state), &function.frame_state(*exit_state), block.map(|bh| lower_block_handler(jit, bh)), captured.map(|c| jit.get_opnd(c))))
         },
         Insn::PopInlineFrame { iseq, argc, state } => {
             no_output!(gen_pop_inline_frame(asm, *iseq, *argc, &function.frame_state(*state)))
@@ -1125,7 +1131,7 @@ fn gen_ccall_with_frame(
         slot_index: jit.base_ptr_slot_index(state.depth),
         stack_size: caller_stack_size.try_into().expect("stack size overflow"),
     }];
-    stack_map.extend(build_stack_map(jit, function, &state.with_stack_size(caller_stack_size)));
+    stack_map.extend(build_stack_map(jit, function, &state.with_stack_size(caller_stack_size), VirtualObjects::Forbid));
     let jit_frame = gen_write_jit_frame(asm, state);
     gen_save_sp(asm, caller_stack_size);
     asm_comment!(asm, "save SP as the stack map anchor");
@@ -1244,7 +1250,7 @@ fn gen_ccall_variadic(
         slot_index: jit.base_ptr_slot_index(state.depth),
         stack_size: caller_stack_size.try_into().expect("stack size overflow"),
     }];
-    stack_map.extend(build_stack_map(jit, function, &state.with_stack_size(caller_stack_size)));
+    stack_map.extend(build_stack_map(jit, function, &state.with_stack_size(caller_stack_size), VirtualObjects::Forbid));
     let jit_frame = gen_write_jit_frame(asm, state);
     gen_save_sp(asm, caller_stack_size);
     asm_comment!(asm, "save SP as the stack map anchor");
@@ -1909,7 +1915,7 @@ fn gen_send_iseq_direct(
     // Save cfp->pc and cfp->sp for the caller frame
     // Can't use gen_prepare_non_leaf_call because we need special SP math.
     let stack_size = state.stack().len() - args.len() - 1; // -1 for receiver
-    let stack_map = build_stack_map(jit, function, &state.with_stack_size(stack_size));
+    let stack_map = build_stack_map(jit, function, &state.with_stack_size(stack_size), VirtualObjects::Forbid);
     let jit_frame = gen_write_jit_frame(asm, state);
     gen_save_sp(asm, stack_size);
 
@@ -2155,7 +2161,7 @@ fn gen_invoke_block_iseq_direct(
     let specval = asm.or(captured_ep, Opnd::Imm(0x1));
 
     let stack_size = state.stack().len() - args.len();
-    let stack_map = build_stack_map(jit, function, &state.with_stack_size(stack_size));
+    let stack_map = build_stack_map(jit, function, &state.with_stack_size(stack_size), VirtualObjects::Forbid);
     let jit_frame = gen_write_jit_frame(asm, state);
     gen_save_sp(asm, stack_size);
 
@@ -3632,7 +3638,7 @@ fn gen_spill_stack(jit: &JITState, asm: &mut Assembler, function: &Function, sta
     let mut offset = state.stack_size() as i32;
     // Whether the cursor is in a frame's locals area; see StackMapEntry::SkipVmEnvData.
     let mut locals_area = false;
-    for entry in build_stack_map(jit, function, state) {
+    for entry in build_stack_map(jit, function, state, VirtualObjects::Forbid) {
         match entry {
             // Skip over locals in stack memory
             StackMapEntry::Opnd(_) if locals_area => {
@@ -3657,6 +3663,10 @@ fn gen_spill_stack(jit: &JITState, asm: &mut Assembler, function: &Function, sta
             }
             // Only gen_prepare_non_leaf_call() prepends this, and it doesn't spill.
             StackMapEntry::BasePtr { .. } => unreachable!("build_stack_map() does not emit BasePtr"),
+            StackMapEntry::NewObject { .. }
+            | StackMapEntry::SetIvar { .. }
+            | StackMapEntry::VirtualRef { .. }
+            | StackMapEntry::SelfRef { .. } => unreachable!("VirtualObjects::Forbid stack maps have no virtual objects"),
         }
     }
 }
@@ -3669,14 +3679,70 @@ fn gen_prepare_fallback_call(jit: &JITState, asm: &mut Assembler, function: &Fun
     gen_prepare_non_leaf_call_with_operand_stack(jit, asm, function, state, OperandStack::AlreadySpilled);
 }
 
+/// How [build_stack_map] treats scalar-replaced objects in the frame state.
+#[derive(Clone, Copy, PartialEq)]
+enum VirtualObjects {
+    /// The stack map is decoded once, by a side exit, so it can allocate the objects.
+    Materialize,
+    /// The stack map may be decoded while the JIT frame keeps running, so it must not reference
+    /// any virtual object. HIR guarantees this through [hir::Insn::never_publishes_stack_map].
+    Forbid,
+}
+
 /// Build entries for Ruby stack values that need materialization. The actual
 /// JITFrame entries are encoded by the register allocator, where VReg locations
 /// on the native stack are known.
-fn build_stack_map(jit: &JITState, function: &Function, state: &FrameState) -> Vec<StackMapEntry> {
+fn build_stack_map(jit: &JITState, function: &Function, state: &FrameState, virtual_objects: VirtualObjects) -> Vec<StackMapEntry> {
     let mut stack = Vec::new();
+
+    // Allocate every virtual object reachable from the frames first, so frame entries can refer
+    // to them by index. Field values come from the innermost Snapshot, which is the newest.
+    let mut object_indexes: Vec<InsnId> = vec![];
+    match virtual_objects {
+        VirtualObjects::Forbid => {
+            assert!(state.virtual_objects().is_empty(), "virtual object in a lazily published stack map; Insn::never_publishes_stack_map is out of sync with codegen");
+        }
+        VirtualObjects::Materialize => {
+            for (index, object_state) in state.virtual_objects().iter().enumerate() {
+                let object = function.find_id(object_state.object);
+                let &hir::Insn::VirtualObject { class } = function.find_ref(object) else {
+                    panic!("FrameState::virtual_objects entry {object} is not a VirtualObject");
+                };
+                let index = u32::try_from(index).unwrap();
+                stack.push(StackMapEntry::NewObject { index, class });
+                object_indexes.push(object);
+                for field in &object_state.fields {
+                    assert!(!function.is_virtual_object(field.val), "virtual object {object} has a field holding virtual object {}", field.val);
+                    let val = jit.get_opnd(field.val);
+                    assert!(
+                        matches!(val, Opnd::Value(_) | Opnd::VReg { .. }),
+                        "VirtualField should only reference Opnd::Value or Opnd::VReg, but got: {val:?}",
+                    );
+                    stack.push(StackMapEntry::SetIvar { index, id: field.id, val });
+                }
+            }
+        }
+    }
+    let virtual_object_index = |insn_id: InsnId| -> Option<u32> {
+        if !function.is_virtual_object(insn_id) {
+            return None;
+        }
+        assert!(
+            virtual_objects == VirtualObjects::Materialize,
+            "virtual object in a lazily published stack map; Insn::never_publishes_stack_map is out of sync with codegen",
+        );
+        let insn_id = function.find_id(insn_id);
+        let index = object_indexes.iter().position(|&object| object == insn_id)
+            .unwrap_or_else(|| panic!("virtual object {insn_id} has no state in the innermost Snapshot"));
+        Some(u32::try_from(index).unwrap())
+    };
+
     let mut current_state = state.clone();
     loop {
         let to_entry = |insn_id| {
+            if let Some(index) = virtual_object_index(insn_id) {
+                return StackMapEntry::VirtualRef { index };
+            }
             let opnd = jit.get_opnd(insn_id);
             assert!(
                 matches!(opnd, Opnd::Value(_) | Opnd::VReg { .. }),
@@ -3685,6 +3751,10 @@ fn build_stack_map(jit: &JITState, function: &Function, state: &FrameState) -> V
             StackMapEntry::Opnd(opnd)
         };
 
+        // An inlined frame whose receiver was scalar-replaced has a placeholder in cfp->self.
+        if let Some(index) = current_state.self_val().and_then(virtual_object_index) {
+            stack.push(StackMapEntry::SelfRef { index });
+        }
         // Operand stack, top-down.
         stack.extend(current_state.stack().rev().copied().map(to_entry));
         // Frame environment data (me/cref, specval, flags) already lives in memory.
@@ -3759,7 +3829,7 @@ fn gen_prepare_non_leaf_call_with_operand_stack(
         slot_index: jit.base_ptr_slot_index(state.depth),
         stack_size: stack_size.try_into().expect("stack size overflow"),
     }];
-    let frame_entries = build_stack_map(jit, function, state);
+    let frame_entries = build_stack_map(jit, function, state, VirtualObjects::Forbid);
     match operand_stack {
         OperandStack::Describe => stack_map.extend(frame_entries),
         OperandStack::AlreadySpilled => {
@@ -3897,6 +3967,13 @@ fn compile_iseq(iseq: IseqPtr) -> Result<Function, CompileError> {
     };
     if !get_option!(disable_hir_opt) {
         trace_compile_phase("optimize", || function.optimize());
+        // Codegen asserts that stack maps it may publish lazily hold no virtual objects. Debug
+        // builds validate after every pass; check once here so that a pass breaking that
+        // invariant in a release build fails the compilation instead of panicking in codegen.
+        if let Err(err) = function.validate_virtual_objects() {
+            debug!("ZJIT: validate_virtual_objects: {err:?}: {}", iseq_get_location(iseq, 0));
+            return Err(CompileError::ParseError(hir::ParseError::Validation(err)));
+        }
     }
     function.dump_hir();
     let non_final_version = get_or_create_iseq_payload(iseq).versions.len() + 1 < max_iseq_versions();
@@ -3924,7 +4001,7 @@ fn side_exit_with_recompile(jit: &JITState, function: &Function, state: &FrameSt
 /// Build a side-exit context
 fn build_side_exit(jit: &JITState, function: &Function, state: &FrameState) -> SideExit {
     let stack_map = SideExitStackMap {
-        stack: build_stack_map(jit, function, state),
+        stack: build_stack_map(jit, function, state, VirtualObjects::Materialize),
         frame_depth: state.depth,
         jit_frame: PendingJITFrame::new_iseq(state.pc, state.iseq),
     };

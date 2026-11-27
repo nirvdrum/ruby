@@ -41,7 +41,7 @@ ZJIT_FRAME_MATERIALIZE_BLOCK_CODE_P(const zjit_jit_frame_t *jit_frame)
 #if USE_ZJIT
 // JITFrame stack map bit stream format. See StackMapWriter in zjit/src/jit_frame.rs.
 #define ZJIT_STACK_MAP_VARINT_BITS  4
-#define ZJIT_STACK_MAP_OP_BITS      3
+#define ZJIT_STACK_MAP_OP_BITS      4
 // Opcodes in the JITFrame stack map bit stream format
 #define ZJIT_STACK_MAP_OP_END       0
 #define ZJIT_STACK_MAP_OP_VREG      1
@@ -51,6 +51,10 @@ ZJIT_FRAME_MATERIALIZE_BLOCK_CODE_P(const zjit_jit_frame_t *jit_frame)
 #define ZJIT_STACK_MAP_OP_NIL       5
 #define ZJIT_STACK_MAP_OP_SKIP_VM_ENV_DATA 6
 #define ZJIT_STACK_MAP_OP_PREV_FRAME 7
+// Scalar-replaced object materialization. Only side-exit stack maps use these.
+#define ZJIT_STACK_MAP_OP_NEW_OBJECT 8
+#define ZJIT_STACK_MAP_OP_SET_IVAR   9
+#define ZJIT_STACK_MAP_OP_SELF       10
 
 extern void *rb_zjit_entry;
 extern bool rb_zjit_compiling_p;
